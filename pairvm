@@ -130,6 +130,10 @@ module PairVM
       Commands.system(["/dev/drbd#{@num}", command, "--create-device"] +
         args.map { |a| a.to_s })
     end
+    
+    def configured?
+      DRBD.length > @num || self.cs == "Unconfigured"
+    end
   end
 
   #
@@ -185,6 +189,12 @@ module PairVM
       home_machine_cache = home_machine # pointless repeated reloads
       IPAddr.local.member?(home_machine_cache)
     end
+    
+    # Returns the DRBD object for this VM
+    # 
+    def drbd
+      DRBD.new(drbd_node_number)
+    end
 
     # Returns the drbd device we should be using for this VM
     #
@@ -203,6 +213,18 @@ module PairVM
     #
     def drbd_meta_device
       drbd_device + "_meta"
+    end
+    
+    # Do the setup for this machine's DRBD (disk and net)
+    # 
+    def drbd_setup!
+      drbd.setup("disk", machine.drbd_backing_device, machine.drbd_meta_device, 0)
+      drbd.setup("net",
+        "#{Global.ips['here_drbd']}:#{machine.drbd_port}",
+        "#{Global.ips['here_drbd']}:#{machine.drbd_port}",
+        "C",
+        "-A", "discard-least-changes"
+      )
     end
   end
 
@@ -233,7 +255,15 @@ module PairVM
       end
 
       def cmd_create(name, here_or_there, mem, disc_size, drbd_port=nil, kvm_options="", vnc_screen=nil)
-        error("Must supply 'here' or 'there'") unless /^t?here$/.match(here_or_there)
+        if !/^t?here$/.match(here_or_there)
+          if here_or_there == Global.ips['here'].to_s
+            here_or_there == "here"
+          elsif here_or_there == Global.ips['there'].to_s
+            here_or_there =  "there"
+          else
+            error("Must supply 'here' or 'there' or IP address ('#{here_or_there}' is none of those)")
+          end
+        end
         is_here = (here_or_there == "here")
 
         drbd_port ||= Global.allocate_drbd_port
@@ -274,8 +304,13 @@ module PairVM
           "vnc_screen" => vnc_screen.to_i,
           "memory" => mem.to_i
         })
-
-        cmd_autostart(name)
+        
+        machine.drbd_setup!
+        if machine.at_home?
+          machine.drbd.setup("invalidate-remote")
+        else
+          machine.drbd.setup("invalidate")
+        end
       end
 
       def cmd_start(name, forced=nil)
@@ -290,22 +325,14 @@ module PairVM
         # Set up the DRBD - won't work first time as we need to force the primary
         # setting (which is dangerous in general)
         #
-        drbd = DRBD.new(machine.drbd_node_number)
-        drbd.setup("disk",
-          machine.drbd_backing_device, machine.drbd_meta_device, 0)
-        drbd.setup("net",
-          "#{Global.ips['here_drbd']}:#{machine.drbd_port}",
-          "#{Global.ips['here_drbd']}:#{machine.drbd_port}",
-          "C",
-          "-A", "discard-least-changes"
-        )
-        drbd.setup("primary")
-
-
+        machine.drbd_connect! unless machine.drbd.configured?
+        machine.drbd.setup("primary")
       end
 
       def cmd_drbd_listen(name)
-
+        machine = Machine.new(name)
+        return if machine.drbd.configured?
+        machine.drbd.setup("secondary")
       end
 
       # Start any VM that is meant to be started, or drbd listening for those
