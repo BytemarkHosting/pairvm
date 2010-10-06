@@ -269,12 +269,10 @@ module PairVM
       # try to validate our cofiguration a little bit, "drbdsetup net"
       # silently fails if you give it duff IPs.
       
-      p IPAddr.local
-      
       raise ArgumentError.new("'here' IP isn't available locally") unless
-        IPAddr.local.member?(get('ips')['here'])
-      raise ArgumentError.new("'drbd_here' IP isn't available locally") unless
-        IPAddr.local.member?(get('ips')['drbd_here'])
+        IPAddr.local.member?(ips['here'])
+      raise ArgumentError.new("'here_drbd' IP isn't available locally") unless
+        IPAddr.local.member?(ips['here_drbd'])
     end
 
     def ips; Hash[*get('ips').map { |k,v| [k,IPAddr.new(v)]  }.flatten]; end
@@ -489,7 +487,7 @@ module PairVM
         verbose "running drbd setup"
         machine.drbd_connect!
         if machine.at_home?
-          machine.drbd.setup("invalidate-remote")
+          machine.drbd.setup("primary", "-o")
         else
           machine.drbd.setup("invalidate")
         end
