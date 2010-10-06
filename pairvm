@@ -6,13 +6,36 @@
 
 require 'ipaddr'
 require 'yaml'
+require 'tempfile'
+
+class IPAddr
+  class << self
+    # Returns the current list of IPs that this Linux machine is claiming
+    # locally.  Will fail if not running on Linux.  Will return netmasks of
+    # local LANs (masking actual IPs) if with_mask=true
+    #
+    def local(with_mask=false)
+      raw = `/bin/ip addr show`
+      raise ArgumentError.new("/bin/ip command failed") unless $?.exitstatus == 0
+      regex = with_mask ? /inet6? ([^ ]+)/ : /inet6? ([^\/ ]+)/
+      raw.split("\n").map do |line|
+        md = regex.match(line)
+        md ? IPAddr.new(md[1]) : nil
+      end.compact
+    end
+  end
+end
 
 module PairVM
   #
   # A quick class to help us manipulate a YAML file as a database, re-reading
-  # it every time.
+  # it every time.  The YAML must be a hash/dictionary at the top level.
   #
   class YAMLFileFront
+    # Initialise the YAML file - if data is supplied, it is written in its
+    # entirety to the given filename.  If data isn't supplied, the file must
+    # exist and be parseable YAML.
+    #
     def initialize(name, data=nil)
       @name = name
       if data
@@ -24,22 +47,27 @@ module PairVM
       end
     end
 
+    # The name of this file, equivalent to the last component of its path
+    #
     def name
       @name.split("/")[-1]
     end
 
     protected
 
+    # read a key from the file
     def get(key)
-      YAML::parse(@name).transform[key]
+      YAML::parse(File.read(@name)).transform[key]
     end
 
+    # set a key to a new value
     def set(key, value)
-      data = YAML::parse(@name).transform
+      data = YAML::parse(File.read(@name)).transform
       data[key] = value
       write
     end
 
+    # utility to safely write the entire data back to @name
     def write(data)
       tmp = "#{@name}.#{$$}.#{rand(9999999)}"
       begin
@@ -52,26 +80,82 @@ module PairVM
   end
 
   # Gives us the status of a particular machine's KVM process (running or not)
+  # and allows us to start and stop it.
   #
-  class KVMLauncher
-    def initialize(kvm, machine)
-      machine = Machine.new(machine) if machine.kind_of?(String)
+  class KVM
+    # Initialise an object that tracks the KVM process for the given Machine.
+    #
+    def initialize(machine)
+      @machine = machine.kind_of?(Machine) ? machine : Machine.new(machine)
     end
-  end
-
-  # Add a new method to IPAddr to give us the local IPs for this (Linux)
-  # machine
-  #
-  class IPAddr
-    class << self
-      def local
-        raw = `/bin/ip addr show`
-        raise ArgumentError.new("/bin/ip command failed") unless $?.exitstatus == 0
-        raw.split("\n").map do |line|
-          md = /inet6? ([^ ]+)/.match(line)
-          md ? IPAddr.new(md[1]) : nil
-        end.compact
+    
+    # Returns true if the KVM process is running, false otherwise.
+    #
+    def running?
+      return true if pid
+    end
+    
+    # Start this KVM process according to the machine's current settings, and
+    # those found in Global.  Machine must not be running already.
+    #
+    def start!
+      raise ArgumentError.new("KVM for #{@machine.name} is already running") if
+        running?
+      Commands.system(command_line)
+    end
+    
+    # Forcefully stops the KVM process, which must be running
+    # 
+    def stop!
+      raise ArgumentError.new("KVM for #{@machine.name} is not running") if
+        !running?
+      Process.kill(pid)
+    end
+    
+    protected
+    # The PID for the currently running KVM.  Returns nil if it's not running,
+    # and cleans up any stale PID in the process.
+    #
+    def pid
+      begin
+        my_pid = File.read(pidfile).to_i
+      rescue Errno::ENOENT
+        return nil
       end
+      if File.exists?("/proc/#{my_pid}")
+        return my_pid
+      end
+      File.unlink(pidfile)
+      nil
+    end    
+    
+    # the name of the pidfile we use, based on the Machine's name
+    def pidfile
+      "/machines/.#{@machine.name}.pid"
+    end
+    
+    # the name of the monitor socket we use for the running KVM, based on the
+    # Machine's name.
+    def monitorfile
+      "/machines/.#{@machine.name}.monitor"
+    end
+    
+    # return a suitable command line for starting the KVM
+    def command_line
+      [Global.kvm,
+       "-daemonize",
+       "-pidfile", pidfile,
+       "-monitor", "unix:#{monitorfile}",
+       "-drive", "file=#{@machine.drbd.node},if=scsi",
+       "-m", @machine.memory.to_s,
+       "-vnc", "127.0.0.1:"+@machine.vnc_screen.to_s,
+       "-balloon", "virtio",
+       "-net", "nic",
+       # FIXME: script to set up bridge
+       "-net", "tap,name=#{@machine.name},script=no"
+      ] +
+      # FIXME: need to be any cleverer in merging options?
+      @machine.kvm_options.split(" ")
     end
   end
 
@@ -80,6 +164,9 @@ module PairVM
   #
   class DRBD
     class << self
+      # Parses /proc/drbd and returns an array of hashes, one  for each 
+      # configured DRBD.
+      #
       def all_raw
         # this got out of hand for all the use it's going to get
         File.open("/proc/drbd") { |fh| fh.readline; fh.readline; fh.read }.
@@ -110,34 +197,63 @@ module PairVM
             info
           end
       end
-
+ 
+      # The number of currently-configured DRBDs on the system.
       def length
         all_raw.length
       end
     end
 
+    # Initialise an object to track and control the numbered DRBD.  Will 
+    # create the device node automatically if create is set to true.
+    #
     def initialize(num, create=true)
       @num = num
-      raise ArgumentError.new("drbd#{num} not configured") unless
-        DRBD.all_raw[num]
+      if !File.blockdev?(node)
+        if create
+          # no-op for a new device, causes it to be created
+          setup("disconnect", "--create-device")
+        else
+          raise ArgumentError.new("drbd#{num} not configured")
+        end
+      end
     end
 
+    # Allow access to any of the stats in /proc/drbd for this numbered DRBD
+    # via method_missing - e.g. DRBD#cs will return "Unconfigured" for a new
+    # device.
     def method_missing(method, *args)
       DRBD.all_raw[@num][method.to_s]
     end
 
+    # Front to drbdsetup - automatically supplies the device node, and 
+    # converts all arguments to strings, e.g. DRBD.new(0).setup("primary") will
+    # likely call "drbdsetup /dev/drbd0 primary".
+    #
     def setup(command, *args)
-      Commands.system(["/dev/drbd#{@num}", command, "--create-device"] +
-        args.map { |a| a.to_s })
+      Commands.system(
+        *(["drbdsetup", node, command] + args.map { |a| a.to_s })
+      )
     end
     
+    # Returns true if the device node exists, and is configured with some
+    # disk/net settings.  We generally use this to determine whether it's safe 
+    # to reconfigure a DRBD.
+    # 
     def configured?
-      DRBD.length > @num || self.cs == "Unconfigured"
+      @num < DRBD.length && self.cs != "Unconfigured"
+    end
+    
+    # The /dev node corresponding to this DRBD.
+    # 
+    def node
+      "/dev/drbd#{@num}"
     end
   end
 
-  #
-  # Our global settings list.
+  # We keep our global settings in a YAML file called /machines/_global.  This
+  # contains all the information about the pair of VM hosts, and the resources
+  # available to their VMs.  Global settings can be accessed as e.g. Global.ips
   #
   class Global < YAMLFileFront
     class << self
@@ -148,11 +264,22 @@ module PairVM
       end
     end
 
-    def initialize; super("/machines/_global"); end
+    def initialize
+      super("/machines/_global")
+      # try to validate our cofiguration a little bit, "drbdsetup net"
+      # silently fails if you give it duff IPs.
+      
+      p IPAddr.local
+      
+      raise ArgumentError.new("'here' IP isn't available locally") unless
+        IPAddr.local.member?(get('ips')['here'])
+      raise ArgumentError.new("'drbd_here' IP isn't available locally") unless
+        IPAddr.local.member?(get('ips')['drbd_here'])
+    end
 
-    def ips; Hash[*get('ips').map { |k,v| [k,IPAddr.new(v)] }.flatten]; end
-    def drb_ports
-      Range.new(*get('drbd_ports').split(/^\d/, 2).map { |s| s.to_i })
+    def ips; Hash[*get('ips').map { |k,v| [k,IPAddr.new(v)]  }.flatten]; end
+    def drbd_ports
+      Range.new(*get('drbd_ports').split(/[^\d]+/, 2).map { |s| s.to_i })
     end
     def kvm; get('kvm') || "/usr/bin/kvm"; end
     def kvm_options; get('kvm_options') || ""; end
@@ -163,10 +290,42 @@ module PairVM
   #
   class Machine < YAMLFileFront
     # Returns all Machines that we know about
-    def self.all
-      Dir.new("/machines").
-        select { |e| /^[a-z0-9]/.match(e) }.
-        map { |e| Machine.new(e) }
+    class << self
+      def all
+        Dir.new("/machines").
+          select { |e| /^[a-z0-9]/.match(e) }.
+          map { |e| Machine.new(e) }
+      end
+      
+      # Pick an unused DRBD port given the configured global range of DRBD 
+      # ports.
+      def allocate_drbd_port 
+        (Global.drbd_ports.to_a - all.map { |m| m.drbd_port })[0]
+      end
+      
+      # Pick an unused VNC screen number (we assume we can use 0 to 200).
+      def allocate_vnc_screen
+        ((0..200).to_a - all.map { |m| m.vnc_screen })[0]
+      end
+      
+      # Pick an unallocated IP address from the public range, excluding the
+      # first 4.
+      #
+      # FIXME: how to exclude IPs from other pairs of VM hosts that share
+      # our public VLAN?
+      # 
+      def allocate_ip
+        range = Global.ips['public']
+        used = all.map { |m| m.ip }
+        current = range.to_i + 4 # leave first three IPs free for routers
+        current_ip = nil
+        begin
+          current_ip = IPAddr.new(current, Socket::AF_INET)
+          return current_ip.to_s unless used.member?(current_ip)
+          current += 1
+        end while range.include?(current_ip)
+        nil # nothing free
+      end
     end
 
     def initialize(machine, data=nil); super("/machines/#{machine}", data); end
@@ -182,6 +341,8 @@ module PairVM
     def drbd_port; get('drbd_port').to_i; end
     def kvm_options; get('kvm_options'); end
     def vnc_screen; get('vnc_screen'); end
+    
+    def ip; IPAddr.new(get('ip')); end
 
     # Returns true if we are running on our configured "home" machine
     #
@@ -212,19 +373,27 @@ module PairVM
     # Returns the backing device for this VM's DRBD metadata
     #
     def drbd_meta_device
-      drbd_device + "_meta"
+      drbd_backing_device + "_meta"
     end
     
-    # Do the setup for this machine's DRBD (disk and net)
+    # Do the setup for this machine's DRBD (disk and net) - will fail if the
+    # DRBD is already configured.
     # 
-    def drbd_setup!
-      drbd.setup("disk", machine.drbd_backing_device, machine.drbd_meta_device, 0)
+    def drbd_connect!
+      drbd.setup("disk", drbd_backing_device, drbd_meta_device, 0)
       drbd.setup("net",
-        "#{Global.ips['here_drbd']}:#{machine.drbd_port}",
-        "#{Global.ips['here_drbd']}:#{machine.drbd_port}",
+        "#{Global.ips['here_drbd']}:#{drbd_port}",
+        "#{Global.ips['there_drbd']}:#{drbd_port}",
         "C",
         "-A", "discard-least-changes"
       )
+    end
+    
+    # Returns a KVM object for tracking whether this Machine is actually
+    # running or not.
+    # 
+    def kvm
+      @kvm ||= KVM.new(self)
     end
   end
 
@@ -232,9 +401,23 @@ module PairVM
   #
   module Commands
     class << self
-      def error(msg)
-        STDERR.print("#{msg}\n")
+      # Report an error and stop running
+      # 
+      def error(msg, exception=nil)
+        if exception
+          STDERR.print "*** #{exception}\n"
+          exception.backtrace.each do |line|
+            STDERR.print "* #{line}\n"
+          end
+        end
+        STDERR.print("*** #{msg}\n")
         exit 1
+      end
+      
+      # 
+      #
+      def verbose(msg)
+        STDERR.print "#{msg}\n" if @verbose
       end
 
       # Changes system to throw an exception if it fails
@@ -243,18 +426,26 @@ module PairVM
         if !Kernel::system(*args)
           STDERR.print "*** Error running #{args.join(' ')}\n"
           exit 2
+        else
+          verbose "system: "+args.join(" ")
         end
       end
 
-      def parse(args)
+      # Turn our command line into execution of a method
+      #
+      def parse(*args)
         error("No command provided") if args.empty?
+        if /-v|--verbose/.match(args[0])
+          args.shift
+          @verbose = true
+        end
         cmd = args.shift
         cmd_sym = "cmd_#{cmd}".to_sym
         error("No such command '#{cmd}'") unless respond_to?(cmd_sym)
         __send__(cmd_sym, *args)
       end
 
-      def cmd_create(name, here_or_there, mem, disc_size, drbd_port=nil, kvm_options="", vnc_screen=nil)
+      def cmd_create(name, here_or_there, mem, disc_size, ip=nil, drbd_port=nil, kvm_options="", vnc_screen=nil)
         if !/^t?here$/.match(here_or_there)
           if here_or_there == Global.ips['here'].to_s
             here_or_there == "here"
@@ -266,60 +457,54 @@ module PairVM
         end
         is_here = (here_or_there == "here")
 
-        drbd_port ||= Global.allocate_drbd_port
-        vnc_screen ||= Global.allocate_vnc_screen
+        drbd_port ||= Machine.allocate_drbd_port
+        vnc_screen ||= Machine.allocate_vnc_screen
+        ip ||= Machine.allocate_ip
+        
+        error("No DRBD ports left to allocate") unless drbd_port
+        error("No VNC screens  left to allocate") unless vnc_screen
+        error("No IP addresses left to allocate") unless ip
 
         # Create our logical volumes - 10MB metadata is enough for a device
         # size of 32TB.  drbd name seems to be ignored for the 'create-md'
         # command, but it needs to be valid, and not configured.
         #
         system("lvcreate -n#{name} -L#{disc_size} #{here_or_there}")
-        system("lvcreate -n#{name}_meta -L10M #{here_or_there}")
+        system("lvcreate -n#{name}_meta -L128M #{here_or_there}")
         system("drbdmeta --force /dev/drbd9999999999 "+
           "v08 /dev/#{here_or_there}/#{name}_meta 0 create-md"
         )
 
-        # NOT NEEDED YET, but will be when starting
-        #
-        #system("drbdsetup #{drbd_device} disk "+
-        #  "/dev/#{here_or_there}/#{name} /dev/#{here_or_there}/#{name}_meta 0 "+
-        #  "--create-device"
-        #)
-        #system("drbdsetup #{drbd_device} net "+
-        #  "#{Global.ips['here_drbd']}:#{drbd_port} "+
-        #  "#{Global.ips['there_drbd']}:#{drbd_port} "+
-        #  "C -A discard-least-changes"
-        #)
-
-#drbdsetup /dev/drbd2 disk /dev/there/vm1 /dev/there/vm1_meta 0 --create-device
-#drbdsetup /dev/drbd2 net 46.43.48.134:5001 46.43.48.133:5001 C -A discard-least-changes
-#drbdmeta /dev/drbd2 v08 /dev/there/vm1_meta 0 create-md
-
+        verbose "creating #{name}"
         machine = Machine.new(name, {
+          "ip" => ip,
           "suppress" => 1,
-          "ip" => find_ip_address,
-          "home_machine" => Globals.ips[is_here ? 'here' : 'there'],
+          "home_machine" => Global.ips[is_here ? 'here' : 'there'].to_s,
           "drbd_port" => drbd_port.to_i,
           "kvm_options" => kvm_options,
           "vnc_screen" => vnc_screen.to_i,
           "memory" => mem.to_i
         })
         
-        machine.drbd_setup!
+        verbose "running drbd setup"
+        machine.drbd_connect!
         if machine.at_home?
           machine.drbd.setup("invalidate-remote")
         else
           machine.drbd.setup("invalidate")
         end
+        
+        # FIXME: ssh and run same command on other host would be helpful
       end
 
       def cmd_start(name, forced=nil)
         machine = Machine.new(name)
         forced = (forced == "--force")
+        
+        verbose "starting #{name} #{at_home? ? 'at home' : 'away'} force=#{forced}"
 
         if !machine.at_home? && !forced
-          STDERR.print "*** #{name} is not meant to run here, you must add '--force' to run it away from home\n"
-          exit 1
+          error("#{name} is not meant to run here, you must add '--force' to run it away from home")
         end
 
         # Set up the DRBD - won't work first time as we need to force the primary
@@ -327,12 +512,21 @@ module PairVM
         #
         machine.drbd_connect! unless machine.drbd.configured?
         machine.drbd.setup("primary")
+        
+        if !machine.kvm.running?
+          print "Starting #{machine.name}\n"
+          machine.kvm.start!
+        end
       end
 
       def cmd_drbd_listen(name)
         machine = Machine.new(name)
         return if machine.drbd.configured?
         machine.drbd.setup("secondary")
+      end
+      
+      def cmd_stop(name)
+        Machine.new(name).kvm.stop!
       end
 
       # Start any VM that is meant to be started, or drbd listening for those
@@ -348,9 +542,7 @@ module PairVM
               cmd_drbd_listen(machine.name)
             end
           rescue Exception => ex
-            ([ex] + ex.backtrace + ["Could not autostart VM '#{name}'"]).each do |l|
-              STDERR.print "*** #{l}\n"
-            end
+            error("Could not autostart VM #{name}", ex)
           end
         end
       end
@@ -363,9 +555,6 @@ module PairVM
       end
 
       def cmd_cad(name)
-      end
-
-      def cmd_stop(name)
       end
 
       def cmd_print_ssh_forwards(offset=0)
