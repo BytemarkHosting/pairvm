@@ -98,10 +98,10 @@ module PairVM
     # Start this KVM process according to the machine's current settings, and
     # those found in Global.  Machine must not be running already.
     #
-    def start!
+    def start!(extra_options)
       raise ArgumentError.new("KVM for #{@machine.name} is already running") if
         running?
-      Commands.system(command_line)
+      Commands.system(*(command_line + extra_options))
     end
     
     # Forcefully stops the KVM process, which must be running
@@ -109,7 +109,13 @@ module PairVM
     def stop!
       raise ArgumentError.new("KVM for #{@machine.name} is not running") if
         !running?
-      Process.kill(pid)
+      Process.kill("TERM", pid)
+    end
+    
+    # the name of the monitor socket we use for the running KVM, based on the
+    # Machine's name.
+    def monitorfile
+      "/machines/.#{@machine.name}.monitor"
     end
     
     protected
@@ -134,25 +140,21 @@ module PairVM
       "/machines/.#{@machine.name}.pid"
     end
     
-    # the name of the monitor socket we use for the running KVM, based on the
-    # Machine's name.
-    def monitorfile
-      "/machines/.#{@machine.name}.monitor"
-    end
-    
     # return a suitable command line for starting the KVM
     def command_line
+      me = File.expand_path($0)
       [Global.kvm,
        "-daemonize",
        "-pidfile", pidfile,
-       "-monitor", "unix:#{monitorfile}",
-       "-drive", "file=#{@machine.drbd.node},if=scsi",
+       "-monitor", "unix:#{monitorfile},server,nowait",
+       "-drive", "file=#{@machine.drbd.node},if=virtio",
        "-m", @machine.memory.to_s,
        "-vnc", "127.0.0.1:"+@machine.vnc_screen.to_s,
        "-balloon", "virtio",
-       "-net", "nic",
-       # FIXME: script to set up bridge
-       "-net", "tap,name=#{@machine.name},script=no"
+       # FIXME: mistake in kvm docs, says name= instead of ifname=
+       "-net", "tap,ifname=#{@machine.name},script=#{me}_tap_up,downscript=#{me}_tap_down",
+       "-net", "nic,name=#{@machine.name}",
+       "-bios", "/root/bios.bin" # FIXME: configure somewhere
       ] +
       # FIXME: need to be any cleverer in merging options?
       @machine.kvm_options.split(" ")
@@ -249,6 +251,17 @@ module PairVM
     def node
       "/dev/drbd#{@num}"
     end
+
+    # Waits for the DRBD to reach the given connection state, returning
+    # true if it got there, or false if it timed out.
+    # 
+    def wait_for_state(desired_state, timeout=2)
+      started = Time.now
+      while Time.now < started+timeout
+        return true if self.cs == desired_state
+      end
+      false
+    end
   end
 
   # We keep our global settings in a YAML file called /machines/_global.  This
@@ -281,6 +294,9 @@ module PairVM
     end
     def kvm; get('kvm') || "/usr/bin/kvm"; end
     def kvm_options; get('kvm_options') || ""; end
+    def max_memory
+      get('max_memory') || (File.read("/proc/meminfo").split("\n")[0].split(/\s+/)[1].to_i >> 10) - 1000
+    end
   end
 
   #
@@ -291,8 +307,27 @@ module PairVM
     class << self
       def all
         Dir.new("/machines").
-          select { |e| /^[a-z0-9]/.match(e) }.
+          select { |e| /^[a-z0-9]+$/.match(e) }.
           map { |e| Machine.new(e) }
+      end
+      
+      # Returns the total amount of memory used
+      #
+      def total_memory(list_all=true)
+        all.
+          select { |machine| list_all || machine.at_home? }.
+          inject(0) { |sum,machine| sum + machine.memory }
+      end
+      
+      def total_memory_here(reverse=false)
+        all.select { |machine| reverse ^ machine.at_home? }.
+          inject(0) { |sum,machine| sum + machine.memory }
+      end
+      def total_memory_there
+        total_memory_here(true)
+      end
+      def total_memory
+        total_memory_here + total_memory_there
       end
       
       # Pick an unused DRBD port given the configured global range of DRBD 
@@ -307,7 +342,7 @@ module PairVM
       end
       
       # Pick an unallocated IP address from the public range, excluding the
-      # first 4.
+      # first 6.
       #
       # FIXME: how to exclude IPs from other pairs of VM hosts that share
       # our public VLAN?
@@ -315,7 +350,7 @@ module PairVM
       def allocate_ip
         range = Global.ips['public']
         used = all.map { |m| m.ip }
-        current = range.to_i + 4 # leave first three IPs free for routers
+        current = range.to_i + 6 # leave first 6 IPs free for routers
         current_ip = nil
         begin
           current_ip = IPAddr.new(current, Socket::AF_INET)
@@ -326,7 +361,11 @@ module PairVM
       end
     end
 
-    def initialize(machine, data=nil); super("/machines/#{machine}", data); end
+    def initialize(machine, data=nil)
+      raise ArgumentError.new("Machine name must consist of a-z, 0-9 only") unless
+        /^[a-z0-9]+$/.match(machine)
+      super("/machines/#{machine}", data)
+    end
 
     def suppress?; get('suppress').to_i == 1; end
     def suppress(suppress); set('suppress', suppress ? 1 : 0); end
@@ -377,14 +416,18 @@ module PairVM
     # Do the setup for this machine's DRBD (disk and net) - will fail if the
     # DRBD is already configured.
     # 
-    def drbd_connect!
+    def drbd_connect!(discard_my_data=false)
       drbd.setup("disk", drbd_backing_device, drbd_meta_device, 0)
-      drbd.setup("net",
+      net_args = [
         "#{Global.ips['here_drbd']}:#{drbd_port}",
         "#{Global.ips['there_drbd']}:#{drbd_port}",
         "C",
-        "-A", "discard-least-changes"
-      )
+        "--after-sb-0pri", "discard-zero-changes",
+        "--after-sb-1pri", "consensus",
+        "--after-sb-2pri", "disconnect"
+      ]
+      net_args += ["--discard-my-data"] if discard_my_data
+      drbd.setup("net", *net_args)
     end
     
     # Returns a KVM object for tracking whether this Machine is actually
@@ -392,6 +435,12 @@ module PairVM
     # 
     def kvm
       @kvm ||= KVM.new(self)
+    end
+    
+    # Returns the number of bytes for this VM's disc
+    #
+    def disc_size
+      File.open(drbd_backing_device) { |fh| fh.seek(0,IO::SEEK_END); fh.tell }
     end
   end
 
@@ -453,7 +502,16 @@ module PairVM
             error("Must supply 'here' or 'there' or IP address ('#{here_or_there}' is none of those)")
           end
         end
+        
         is_here = (here_or_there == "here")
+        mem = mem.to_i
+        
+        # Don't FIXME: allow stymied user to override
+        mem_left = Global.max_memory/2 - (is_here ? Machine.total_memory_here : Machine.total_memory_there)
+        error("Won't use >50% of the memory on this host (must be < #{mem_left}M)") if 
+          is_here && Machine.total_memory_here + mem > Global.max_memory/2
+        error("Won't use >50% of the memory on the other host  (must be < #{mem_left}M)") if
+          !is_here && Machine.total_memory_there + mem > Global.max_memory/2
 
         drbd_port ||= Machine.allocate_drbd_port
         vnc_screen ||= Machine.allocate_vnc_screen
@@ -481,7 +539,7 @@ module PairVM
           "drbd_port" => drbd_port.to_i,
           "kvm_options" => kvm_options,
           "vnc_screen" => vnc_screen.to_i,
-          "memory" => mem.to_i
+          "memory" => mem
         })
         
         verbose "running drbd setup"
@@ -495,32 +553,90 @@ module PairVM
         # FIXME: ssh and run same command on other host would be helpful
       end
 
-      def cmd_start(name, forced=nil)
+      def cmd_start(name, *options)
         machine = Machine.new(name)
-        forced = (forced == "--force")
-        
-        verbose "starting #{name} #{at_home? ? 'at home' : 'away'} force=#{forced}"
 
-        if !machine.at_home? && !forced
-          error("#{name} is not meant to run here, you must add '--force' to run it away from home")
+        away = false
+        disconnected = false
+        kvm_options = []
+
+        while !options.empty?
+          o = options.shift
+          case o
+            when "--away" then away = true
+            when "--disconnected" then disconnected = true
+            when "--kvm-options"
+              kvm_options = options
+              options = []
+              break
+            else
+              error "Unknown option #{o}"
+          end
         end
+        
+        verbose "starting #{name} #{machine.at_home? ? 'at home' : 'away'}"+
+          " away=#{away} destroy_peer=#{disconnected}"
 
-        # Set up the DRBD - won't work first time as we need to force the primary
-        # setting (which is dangerous in general)
-        #
-        machine.drbd_connect! unless machine.drbd.configured?
+        error "#{name} is not meant to run here, you must add "+
+          "'--away' to run it away from home" unless 
+          machine.at_home? || away
+
+        machine.drbd.setup("down")
+        machine.drbd_connect!
+
+        if !machine.drbd.wait_for_state("Connected")
+          if machine.drbd.cs == "StandAlone"
+            error "DRBD device #{machine.drbd.node} is StandAlone which "+
+              "suggests a split brain.  Run 'split_brain_victim' on one peer "+
+              "or the other to erase its data and resolve the situation."
+          elsif !disconnected
+            error "DRBD device #{machine.drbd.node} is not connected - use "+
+              "--disconnected if you want to run without the peer (risking "+
+              "split brain later)."
+          end
+        end
+        
+        # If we don't wait for DRBD to connect before we switch to primary,
+        # we risk a split brain.
         machine.drbd.setup("primary")
         
         if !machine.kvm.running?
           print "Starting #{machine.name}\n"
-          machine.kvm.start!
+          machine.kvm.start!(kvm_options)
         end
+      end
+
+      def cmd_tap_up(name)
+        system "ip link set #{name} up promisc on"
+        system "brctl addif br0 #{name}"
+      end
+
+      def cmd_tap_down(name)
+        machine = Machine.new(name)
+        system "brctl delif br0 #{name}"
+        system "ip link set #{name} down"
+        # make sure the other host can become primary without a fight before
+        # we switch off
+        machine.drbd.setup("secondary")
       end
 
       def cmd_drbd_listen(name)
         machine = Machine.new(name)
-        return if machine.drbd.configured?
+        machine.drbd_connect! unless machine.drbd.configured?
         machine.drbd.setup("secondary")
+      end
+
+      def cmd_split_brain_victim(name, snapshot_size="5G")
+        machine = Machine.new(name)
+
+        lv_name = machine.name + "_split_" +
+          Time.now.strftime("%Y%m%d%H%M%S")
+        system("lvcreate -n#{lv_name} -L#{snapshot_size} -s #{machine.drbd_backing_device}")
+
+        machine.drbd.setup("down")
+        machine.drbd_connect!(true) # do the damage now we have a backup
+
+        verbose "Created snapshot #{lv_name}, original will now be overwritten by peer"
       end
       
       def cmd_stop(name)
@@ -548,20 +664,64 @@ module PairVM
       def cmd_suppress(name, do_suppress)
         Machine.new(name).suppress = do_suppress
       end
-
+      
       def cmd_monitor(name)
+        exec("/usr/bin/socat", "-", Machine.new(name).kvm.monitorfile)
       end
-
-      def cmd_cad(name)
+      
+      def cmd_list
+        print "Name            Memory Disc Run?    Home?   VNC\n"
+        Machine.all.each do |machine|
+          printf "%-15s %-6s %-4s %-s %-s :%-3d \n", 
+            machine.name, 
+            machine.memory.to_s + "M",
+            (machine.disc_size >> 30).to_s + "G",
+            machine.kvm.running? ?  "Running" : "Stopped",
+            machine.at_home? ? "at home" : "away   ",
+            machine.vnc_screen
+        end
+        
+        print "\nTotal RAM here: #{Machine.total_memory_here}M "+
+          "there: #{Machine.total_memory_there}M "+
+          "max: #{Global.max_memory}M\n"
       end
 
       def cmd_print_ssh_forwards(offset=0)
+        offset = offset.to_i
+        print "OpenSSH port forwards (cut & paste): "
+        num = 0
+        machines = Machine.all.select { |m| m.kvm.running? }
+        machines.each do |machine|
+          print "-L #{5900+offset+num}:localhost:#{5900+machine.vnc_screen} "
+          num += 1
+        end
+        print "\n"
+        num = 0
+        machines.each do |machine|
+          print "#{machine.name} is on VNC localhost:#{offset+num}\n"
+        end
       end
     end
   end
 end
 
-# FIXME: global lock, only run one at a time
-#
-PairVM::Commands.parse(*ARGV)
+me = File.expand_path($0)
+if /_tap_(up|down)$/.match(me)
+  PairVM::Commands.parse("tap_#{$1}", ARGV[0])
+else
+  File.open("/machines/_global") do |lockfile|
+    # Script must be callable by two aliases for qemu network scripts to work
+    # - if this fails, you'll need to do it yourself.
+    File.symlink(me, me+"_tap_up") unless File.symlink?(me+"_tap_up")
+    File.symlink(me, me+"_tap_down") unless File.symlink?(me+"_tap_down")
+    
+    # there's nothing safe about running two of this script
+    lockfile.flock(File::LOCK_EX)
+    begin
+      PairVM::Commands.parse(*ARGV)
+    ensure
+      lockfile.flock(File::LOCK_UN)
+    end
+  end
+end
 
