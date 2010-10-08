@@ -16,7 +16,7 @@ class IPAddr
     #
     def local(with_mask=false)
       raw = `/bin/ip addr show`
-      raise ArgumentError.new("/bin/ip command failed") unless $?.exitstatus == 0
+      raise "/bin/ip command failed" unless $?.exitstatus == 0
       regex = with_mask ? /inet6? ([^ ]+)/ : /inet6? ([^\/ ]+)/
       raw.split("\n").map do |line|
         md = regex.match(line)
@@ -99,7 +99,7 @@ module PairVM
     # those found in Global.  Machine must not be running already.
     #
     def start!(extra_options)
-      raise ArgumentError.new("KVM for #{@machine.name} is already running") if
+      raise "KVM for #{@machine.name} is already running" if
         running?
       Commands.system(*(command_line + extra_options))
     end
@@ -107,7 +107,7 @@ module PairVM
     # Forcefully stops the KVM process, which must be running
     # 
     def stop!
-      raise ArgumentError.new("KVM for #{@machine.name} is not running") if
+      raise "KVM for #{@machine.name} is not running" if
         !running?
       Process.kill("TERM", pid)
     end
@@ -216,7 +216,7 @@ module PairVM
           # no-op for a new device, causes it to be created
           setup("disconnect", "--create-device")
         else
-          raise ArgumentError.new("drbd#{num} not configured")
+          raise "drbd#{num} not configured"
         end
       end
     end
@@ -486,12 +486,36 @@ module PairVM
           args.shift
           @verbose = true
         end
+		args[0] = "help" if /-h|--help|/.match(args[0])
+		
         cmd = args.shift
         cmd_sym = "cmd_#{cmd}".to_sym
         error("No such command '#{cmd}'") unless respond_to?(cmd_sym)
-        __send__(cmd_sym, *args)
+		begin
+          __send__(cmd_sym, *args)
+		rescue ArgumentError => ex
+		  # assume the user can fix these, report them nicely
+		  help_sym = "help_#{cmd}".to_sym
+		  raise unless respond_to?(help_sym)
+		  error(ex.to_s)
+		end
       end
-
+	  
+	  def help_create; [
+	    "Creates a new virtual machine",
+	    ["name", "here|there|IP", "memory", "disc_size"],
+		["ip", "drbd_port", "kvm_options", "vnc_screen"],
+		{ "name" => "The name of the VM (15 chars max)",
+		  "here|there|IP" => "The IP of the machine to run on (or 'here' or 'there')",
+		  "memory" => "The number of megabytes of memory to allocate",
+		  "disc_size" => "The size of disc to allocate (include prefix, e.g. 50G)",
+		  "ip" => "The IP address to use (default is to auto-allocate)",
+		  "drbd_port" => "The DRBD port to use (default is to auto-allocate)",
+		  "kvm_options" => "Any permanent KVM options for this VM (default is empty)",
+		  "vnc_Screen" => "The VNC screen number (default is to auto-allocate)"
+		}
+	  ]; end
+	  
       def cmd_create(name, here_or_there, mem, disc_size, ip=nil, drbd_port=nil, kvm_options="", vnc_screen=nil)
         if !/^t?here$/.match(here_or_there)
           if here_or_there == Global.ips['here'].to_s
@@ -552,6 +576,17 @@ module PairVM
         
         # FIXME: ssh and run same command on other host would be helpful
       end
+	  
+	  def help_start; [
+	    "Starts a virtual machine running on this host",
+		["name"],
+		["--away", "--disconnected", "--kvm-options"],
+		{ "name" => "The name of the VM",
+		  "--away" => "Force VM to run when not on its home machine",
+		  "--disconnected" => "Force VM to run without replicating to peer",
+		  "--kvm-options <options...>" => "Extra KVM options for this boot"
+		}
+	  ]; end
 
       def cmd_start(name, *options)
         machine = Machine.new(name)
@@ -605,11 +640,25 @@ module PairVM
           machine.kvm.start!(kvm_options)
         end
       end
+	  
+	  def help_tap_up; [
+	    "Used internally by qemu to start network interface after KVM startup"
+		["name"],
+		[],
+		{ "name" => "The name of the VM (and network interface)" }
+	  ]; end
 
       def cmd_tap_up(name)
         system "ip link set #{name} up promisc on"
         system "brctl addif br0 #{name}"
       end
+	  
+	  def help_tap_down; [
+	    "Used internally by qemu to stop network interface after KVM shutdown"
+		["name"],
+		[],
+		{ "name" => "The name of the VM (and network interface)" }
+	  ]; end
 
       def cmd_tap_down(name)
         machine = Machine.new(name)
@@ -619,13 +668,29 @@ module PairVM
         # we switch off
         machine.drbd.setup("secondary")
       end
-
+	  
+	  def help_drbd_listen; [
+	    "Set up DRBD for given machine in secondary role"
+		["name"],
+		[],
+		{ "name" => "The name of the VM" }
+	  ]; end
+	  
       def cmd_drbd_listen(name)
         machine = Machine.new(name)
         machine.drbd_connect! unless machine.drbd.configured?
         machine.drbd.setup("secondary")
       end
-
+	  
+	  def help_split_brain_victim; [
+	    "Designate the VM data on this host as a 'split brain victim' and erase it to resume replication"
+		["name"],
+		[],
+		{ "name" => "The name of the VM" ,
+		  "snapshot_size" => "The size of the snapshot to create before erasing the data"
+		}
+	  ]; end
+	  
       def cmd_split_brain_victim(name, snapshot_size="5G")
         machine = Machine.new(name)
 
@@ -638,7 +703,14 @@ module PairVM
 
         verbose "Created snapshot #{lv_name}, original will now be overwritten by peer"
       end
-      
+	  
+	  def help_stop; [
+	    "Immediately kill the given VM (power off)"
+		["name"],
+		[],
+		{ "name" => "The name of the VM" }
+	  ]; end
+	        
       def cmd_stop(name)
         Machine.new(name).kvm.stop!
       end
