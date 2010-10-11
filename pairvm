@@ -668,6 +668,7 @@ module PairVM
         machine.drbd.setup("down") if machine.drbd.configured?
         system("lvremove", "-f", machine.drbd_backing_device)
         system("lvremove", "-f", machine.drbd_meta_device)        
+        File.unlink("/machines/#{machine.name}")
         system("ssh", Global.ips[machine.at_home? ? 'there' : 'here'], $0, "destroy", name, "--no-ssh-to-peer") unless no_ssh_to_peer
       end
       
@@ -892,7 +893,7 @@ module PairVM
         offset = offset.to_i
         print "OpenSSH port forwards: "
         num = 0
-        machines = Machine.all.select { |m| m.kvm.running? }
+        machines = Machine.all.select { |m| m.kvm.running? }.sort { |a,b| a.vnc_screen <=> b.vnc_screen }
         machines.each do |machine|
           print "-L #{5900+offset+num}:localhost:#{5900+machine.vnc_screen} "
           num += 1
@@ -901,6 +902,7 @@ module PairVM
         num = 0
         machines.each do |machine|
           print "#{machine.name} is on VNC localhost:#{offset+num}\n"
+          num += 1
         end
       end
     end
