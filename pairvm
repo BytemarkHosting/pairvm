@@ -220,10 +220,12 @@ module PairVM
     def initialize(num, create=true)
       @num = num
       # I don't like this
-      if /not available/.match(`drbdsetup #{node} status`)
+      if !File.blockdev?(node)
         if create
-          # no-op for a new device, causes it to be created
-          setup("resume-io", "--create-device")
+          Commands.system("mknod", node, "b", 147, num)
+          
+          #### no-op for a new device, causes it to be created - doesn't work beyond 16?  possibly udev issue?
+          ### setup("resume-io", "--create-device")
         else
           raise "drbd#{num} not configured"
         end
@@ -409,6 +411,12 @@ module PairVM
       IPAddr.local.member?(home_machine_cache)
     end
     
+    # Returns true if we are running on our configured "away" machine
+    #
+    def away?
+      !at_home?
+    end
+    
     # Returns the DRBD object for this VM
     # 
     def drbd
@@ -425,6 +433,13 @@ module PairVM
     #
     def drbd_backing_device
       here_or_there = at_home? ? "here" : "there"
+      "/dev/#{here_or_there}/#{name}"
+    end
+    
+    # Returns the expected backing device for this VM on the other host
+    #
+    def drbd_backing_device_there
+      here_or_there = at_home? ? "there" : "here"
       "/dev/#{here_or_there}/#{name}"
     end
 
@@ -609,7 +624,7 @@ module PairVM
         error("No DRBD ports left to allocate") unless drbd_port
         error("No VNC screens  left to allocate") unless vnc_screen
         error("No IP addresses left to allocate") unless ip
-
+        
         # Create our logical volumes - 128MB fixed metadata
 
         verbose "creating #{name}"
@@ -638,14 +653,14 @@ module PairVM
         # Need to wait for DRBD to get in gear before going further
         error "DRBD in unexpected state: #{machine.drbd.cs}" unless 
           machine.drbd.wait_for_states("WFConnection", "Connected", "SyncSource", "SyncTarget")
-          
+        
         machine.drbd.setup("primary", "-o") if machine.at_home?
         
         if !no_ssh_to_peer
           verbose("ssh to other host")
           # Now do the same on the other host
           #
-          ssh_command  = ["ssh", Global.ips[is_here ? 'there' : 'here'], $0]
+          ssh_command  = ["ssh", Global.ips['there'], $0]
           ssh_command += ["-v"] if @verbose
           ssh_command += [
             "create", 
@@ -677,16 +692,61 @@ module PairVM
       
       def cmd_destroy(name, no_ssh_to_peer=nil)
         machine = Machine.new(name)
-        no_ssh_to_peer = (no_ssh_to_peer == "--no-ssh-to-peer")
-        
+        no_ssh_to_peer = (no_ssh_to_peer == "--no-ssh-to-peer")        
         machine.kvm.stop! if machine.kvm.running?
         machine.drbd.setup("down") if machine.drbd.configured?
         system("lvremove", "-f", machine.drbd_backing_device)
         system("lvremove", "-f", machine.drbd_meta_device)        
         is_at_home = machine.at_home? # about to destroy machine
         File.unlink("/machines/#{machine.name}")
-        system("ssh", Global.ips[is_at_home ? 'there' : 'here'], $0, "destroy", name, "--no-ssh-to-peer") unless no_ssh_to_peer
+        system("ssh", Global.ips['there'], $0, "destroy", name, "--no-ssh-to-peer") unless no_ssh_to_peer
       end
+      
+      def help_swap; [
+        "Move a VM to the other server (very slow, copies data)",
+        ["name"],
+        [],
+        { "name" => "The name of the VM to move" }
+      ]; end
+      
+      def cmd_swap(name)
+        machine = Machine.new(name)        
+        machine.drbd_connect! unless machine.drbd.configured?
+        error("You must run 'pairvm swap' from the home machine (i.e. the other one)") unless machine.at_home?
+        error("Local disc copy is not up to date, you'll need to wait") unless machine.drbd.ds.split("/")[0] == "UpToDate"
+        
+        # Stops the VM here, destroys it fully on the other host, and almost
+        # destroys it here (instead renames its backing volume).
+        # 
+        machine.kvm.stop! if machine.kvm.running?
+        machine.drbd.setup("down") if machine.drbd.configured?            
+        tmp_backing_device = machine.drbd_backing_device + "_moving_#{$$}"
+        old_mem = machine.memory
+        old_disc_size = "#{machine.disc_size >> 10}K"
+        old_ip = machine.ip.to_s
+        old_drbd_port = machine.drbd_port
+        old_kvm_options = machine.kvm_options
+        old_vnc_screen = machine.vnc_screen
+        system("lvrename", machine.drbd_backing_device, tmp_backing_device)
+        system("lvremove", "-f", machine.drbd_meta_device)
+        File.unlink("/machines/#{machine.name}")
+        system("ssh", Global.ips['there'], $0, "destroy", name, "--no-ssh-to-peer")
+        
+        # Now recreate the VM here from the old source data.  The create command
+        # will prematurely start syncing the blank machine, so we stop it and
+        # start again after copying the old data to the backing device.
+        #
+        # This is a slightly odd state of affairs, because we are creating a
+        # machine 'there', but forcing ourselves into the primary state so that
+        # our data overwrites that on the new "home" machine.
+        # 
+        cmd_create(name, "there", old_mem, old_disc_size, old_ip, old_drbd_port, old_kvm_options, old_vnc_screen)
+        machine.drbd.setup("down")
+        system("dd", "if=#{tmp_backing_device}", "of=#{machine.drbd_backing_device}")
+        system("lvremove", "-f", tmp_backing_device)
+        machine.drbd_connect!
+        system("ssh", Global.ips['there'], $0, "split_brain_victim", name, "0")
+      end      
       
   	  def help_start; [
   	    "Starts a virtual machine running on this host",
@@ -727,9 +787,12 @@ module PairVM
           "'--away' to run it away from home" unless 
           machine.at_home? || away
 
-        machine.drbd.setup("down")
-        machine.drbd_connect!
+        #machine.drbd.setup("down")
+        machine.drbd_connect! unless machine.drbd.configured?
 
+        # If we don't wait for DRBD to connect before we switch to primary,
+        # we risk a split brain.
+        #
         if !machine.drbd.wait_for_states("Connected", "SyncSource", "SyncTarget")
           if machine.drbd.cs == "StandAlone"
             error "DRBD device #{machine.drbd.node} is StandAlone which "+
@@ -742,8 +805,17 @@ module PairVM
           end
         end
         
-        # If we don't wait for DRBD to connect before we switch to primary,
-        # we risk a split brain.
+        # Push other host into secondary state
+        #
+        if !disconnected
+          ssh_command  = ["ssh", Global.ips['there'], $0]
+          ssh_command += ["-v"] if @verbose
+          ssh_command += ["drbd_connect", machine.name]
+          system(*ssh_command)
+        end
+        
+        # Now this should work without error
+        #
         machine.drbd.setup("primary")
         
         if !machine.kvm.running?
@@ -793,24 +865,76 @@ module PairVM
         machine.drbd_connect! unless machine.drbd.configured?
         machine.drbd.setup("secondary")
       end
+      
+      def help_resize; [
+        "Resize the given server's disc",
+        ["name", "size"],
+        [],
+        { "name" => "The name of the VM", 
+          "size" => "The new size (either +, - or absolute size)",
+          "--confirm-shrink" => "You'll need to supply this if you want to shrink the disc" }
+      ]; end
+      
+      def parse_size(spec)
+        return case spec[-1..-1]
+          when /[kK]/ then spec.to_i << 10
+          when /[mM0123456789]/ then spec.to_i << 20
+          when /[gG]/ then spec.to_i << 30
+          when /[tT]/ then spec.to_i << 40
+          when /[pP]/ then spec.to_i << 50
+          when /[eE]/ then spec.to_i << 60
+          else
+            error("Don't understand size spec #{spec}")
+        end
+      end
+      
+      def cmd_resize(name, new_size, confirm_shrink=nil)
+        machine = Machine.new(name)
+        machine.drbd_connect! unless machine.drbd.configured?
+        current_size_k = machine.disc_size >> 10
+        new_size_k = case new_size[0]
+          when ?+ then (current_size_k << 10) + (parse_size(new_size[1..-1]))
+          when ?- then (current_size_k << 10) - (parse_size(new_size[1..-1]))
+          when ?0..?9 then parse_size(new_size)
+          else
+            error("Don't understand size")
+        end >> 10
+        
+        return if new_size_k == current_size_k
+        confirm_shrink = (confirm_shrink == "--confirm-shrink")
+        error("You must supply --confirm-shrink if you intend to shrink this disc") unless 
+          new_size_k > current_size_k || confirm_shrink
+        error("Can't resize the disc until DRBD is connected and in sync") unless 
+          machine.drbd.wait_for_states("Connected")
+        
+        if new_size_k > current_size_k
+          system("lvresize", "--size", "#{new_size_k}K", machine.drbd_backing_device)
+          system("ssh", Global.ips['there'], "lvresize", "--size", "#{new_size_k}K", machine.drbd_backing_device_there)
+          machine.drbd.setup("resize")
+        else
+          error("Sorry, shrinking not implemented yet")
+        end
+      end
 	  
 	    def help_split_brain_victim; [
 	      "Designate the VM data on this host as a 'split brain victim' and erase it to resume replication",
 	     	["name"],
   		  [],
       	{ "name" => "The name of the VM" ,
-	    	  "snapshot_size" => "The size of the snapshot to create before erasing the data"
+	    	  "snapshot_size" => "The size of the snapshot to create before erasing the data (default 2G, say '0' if you just want to erase it)"
 	    	}
 	    ]; end
 	  
-      def cmd_split_brain_victim(name, snapshot_size="5G")
+      def cmd_split_brain_victim(name, snapshot_size="2G")
         machine = Machine.new(name)
 
-        lv_name = machine.name + "_split_" +
-          Time.now.strftime("%Y%m%d%H%M%S")
-        system("lvcreate -n#{lv_name} -L#{snapshot_size} -s #{machine.drbd_backing_device}")
+        if snapshot_size != "0"
+          lv_name = machine.name + "_split_" +
+            Time.now.strftime("%Y%m%d%H%M%S")
+          system("lvcreate -n#{lv_name} -L#{snapshot_size} -s #{machine.drbd_backing_device}")
+        end
 
-        machine.drbd.setup("down")
+        machine.drbd("down")
         machine.drbd_connect!(true) # do the damage now we have a backup
 
         verbose "Created snapshot #{lv_name}, original will now be overwritten by peer"
