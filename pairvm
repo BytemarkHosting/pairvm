@@ -176,7 +176,7 @@ module PairVM
       # configured DRBD.
       #
       def all_raw
-        system("modprobe drbd") unless File.exists?("/proc/drbd")
+        system("/sbin/modprobe drbd") unless File.exists?("/proc/drbd")
 
         # this got out of hand for all the use it's going to get
         File.open("/proc/drbd") { |fh| fh.readline; fh.readline; fh.read }.
@@ -245,7 +245,7 @@ module PairVM
     #
     def setup(command, *args)
       Commands.system(
-        *(["drbdsetup", node, command] + args.map { |a| a.to_s })
+        *(["/sbin/drbdsetup", node, command] + args.map { |a| a.to_s })
       )
     end
     
@@ -318,7 +318,7 @@ module PairVM
     class << self
       def all
         Dir.new("/machines").
-          select { |e| /^[a-z0-9]+$/.match(e) }.
+          select { |e| /^[a-z0-9\-]+$/.match(e) }.
           map { |e| Machine.new(e) }
       end
       
@@ -641,9 +641,9 @@ module PairVM
         # drbd name seems to be ignored for the 'create-md'
         # command, but it needs to be valid, and not configured.
         #
-        system("lvcreate -n#{name} -L#{disc_size} #{here_or_there}")
-        system("lvcreate -n#{name}_meta -L128M #{here_or_there}")
-        system("drbdmeta --force /dev/drbd9999999999 "+
+        system("/sbin/lvcreate -n#{name} -L#{disc_size} #{here_or_there}")
+        system("/sbin/lvcreate -n#{name}_meta -L128M #{here_or_there}")
+        system("/sbin/drbdmeta --force /dev/drbd9999999999 "+
           "v08 #{machine.drbd_meta_device} 0 create-md"
         )
         
@@ -695,8 +695,8 @@ module PairVM
         no_ssh_to_peer = (no_ssh_to_peer == "--no-ssh-to-peer")        
         machine.kvm.stop! if machine.kvm.running?
         machine.drbd.setup("down") if machine.drbd.configured?
-        system("lvremove", "-f", machine.drbd_backing_device)
-        system("lvremove", "-f", machine.drbd_meta_device)        
+        system("/sbin/lvremove", "-f", machine.drbd_backing_device)
+        system("/sbin/lvremove", "-f", machine.drbd_meta_device)        
         is_at_home = machine.at_home? # about to destroy machine
         File.unlink("/machines/#{machine.name}")
         system("ssh", Global.ips['there'], $0, "destroy", name, "--no-ssh-to-peer") unless no_ssh_to_peer
@@ -727,8 +727,8 @@ module PairVM
         old_drbd_port = machine.drbd_port
         old_kvm_options = machine.kvm_options
         old_vnc_screen = machine.vnc_screen
-        system("lvrename", machine.drbd_backing_device, tmp_backing_device)
-        system("lvremove", "-f", machine.drbd_meta_device)
+        system("/sbin/lvrename", machine.drbd_backing_device, tmp_backing_device)
+        system("/sbin/lvremove", "-f", machine.drbd_meta_device)
         File.unlink("/machines/#{machine.name}")
         system("ssh", Global.ips['there'], $0, "destroy", name, "--no-ssh-to-peer")
         
@@ -743,7 +743,7 @@ module PairVM
         cmd_create(name, "there", old_mem, old_disc_size, old_ip, old_drbd_port, old_kvm_options, old_vnc_screen)
         machine.drbd.setup("down")
         system("dd", "if=#{tmp_backing_device}", "of=#{machine.drbd_backing_device}")
-        system("lvremove", "-f", tmp_backing_device)
+        system("/sbin/lvremove", "-f", tmp_backing_device)
         machine.drbd_connect!
         system("ssh", Global.ips['there'], $0, "split_brain_victim", name, "0")
       end      
@@ -832,8 +832,8 @@ module PairVM
 	      ]; end
 
       def cmd_tap_up(name)
-        system "ip link set #{name} up promisc on"
-        system "brctl addif br0 #{name}"
+        system "/sbin/ip link set #{name} up promisc on"
+        system "/usr/sbin/brctl addif br0 #{name}"
       end
 	  
   	  def help_tap_down; [
@@ -845,8 +845,8 @@ module PairVM
 
       def cmd_tap_down(name)
         machine = Machine.new(name)
-        system "brctl delif br0 #{name}"
-        system "ip link set #{name} down"
+        system "/usr/sbin/brctl delif br0 #{name}"
+        system "/sbin/ip link set #{name} down"
         # make sure the other host can become primary without a fight before
         # we switch off
         # FIXME: this is too early, kvm needs better supervision
@@ -908,7 +908,7 @@ module PairVM
           machine.drbd.wait_for_states("Connected")
         
         if new_size_k > current_size_k
-          system("lvresize", "--size", "#{new_size_k}K", machine.drbd_backing_device)
+          system("/sbin/lvresize", "--size", "#{new_size_k}K", machine.drbd_backing_device)
           system("ssh", Global.ips['there'], "lvresize", "--size", "#{new_size_k}K", machine.drbd_backing_device_there)
           machine.drbd.setup("resize")
         else
@@ -931,7 +931,7 @@ module PairVM
         if snapshot_size != "0"
           lv_name = machine.name + "_split_" +
             Time.now.strftime("%Y%m%d%H%M%S")
-          system("lvcreate -n#{lv_name} -L#{snapshot_size} -s #{machine.drbd_backing_device}")
+          system("/sbin/lvcreate -n#{lv_name} -L#{snapshot_size} -s #{machine.drbd_backing_device}")
         end
 
         machine.drbd("down")
