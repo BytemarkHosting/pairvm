@@ -3,8 +3,12 @@
 # pairvm is a tool to manage virtual machines over pairs of co-operating
 # servers to achieve high availability and simple failover.
 #
-# (C) Bytemark Hosting 2010, distributable under the terms of the GNU General
-# Public License version 3 or later.
+# (C) Bytemark Hosting 2010-11, distributable under the terms of the
+# GNU General Public License version 3 or later.
+#
+# To install on a Debian/squeeze system:
+# * copy to /usr/local/sbin
+# * apt-get install ruby
 
 require 'ipaddr'
 require 'yaml'
@@ -176,8 +180,6 @@ module PairVM
       # configured DRBD.
       #
       def all_raw
-        system("/sbin/modprobe drbd") unless File.exists?("/proc/drbd")
-
         # this got out of hand for all the use it's going to get
         File.open("/proc/drbd") { |fh| fh.readline; fh.readline; fh.read }.
           split(/\n[\d ]\d: (?=cs)/).
@@ -219,16 +221,12 @@ module PairVM
     #
     def initialize(num, create=true)
       @num = num
-      # I don't like this
-      if !File.blockdev?(node)
-        if create
-          Commands.system("mknod", node, "b", 147, num)
-          
-          #### no-op for a new device, causes it to be created - doesn't work beyond 16?  possibly udev issue?
-          ### setup("resume-io", "--create-device")
-        else
-          raise "drbd#{num} not configured"
-        end
+      # I don't like this - but maybe drbdadm does something similar
+      if create
+        Commands.system("mknod", node, "b", 147, num) unless File.blockdev?(node)
+        Kernel::system("/sbin/drbdsetup #{node} resume-io --create-device 2>&1")
+      else
+        raise "drbd#{num} not configured"
       end
     end
 
@@ -267,9 +265,10 @@ module PairVM
     # true if it got there, or false if it timed out.
     # 
     def wait_for_states(*desired_states)
-      wait_until = Time.now + 4
+      wait_until = Time.now + 10
       while Time.now < wait_until
         return true if desired_states.member?(self.cs)
+        sleep 1
       end
       false
     end
@@ -319,7 +318,8 @@ module PairVM
       def all
         Dir.new("/machines").
           select { |e| /^[a-z0-9\-]+$/.match(e) }.
-          map { |e| Machine.new(e) }
+          map { |e| Machine.new(e) }.
+          sort
       end
       
       # Returns the total amount of memory used
@@ -371,6 +371,8 @@ module PairVM
         nil # nothing free
       end
     end
+
+    def <=>(b); self.name <=> b.name; end
 
     def initialize(machine, data=nil)
       raise ArgumentError.new("Machine name must be 3-15 chars, consist of a-z, 0-9, and - only") unless
@@ -598,6 +600,9 @@ module PairVM
   	  ]; end
 	  
       def cmd_create(name, here_or_there, mem, disc_size, ip=nil, drbd_port=nil, kvm_options="", vnc_screen=nil, no_ssh_to_peer=nil)
+
+        check_system
+
         if here_or_there == Global.ips['here'].to_s
           here_or_there = "here"
         elsif here_or_there == Global.ips['there'].to_s
@@ -609,12 +614,20 @@ module PairVM
         is_here = (here_or_there == "here")
         mem = mem.to_i
         
-        # Don't FIXME: allow stymied user to override
-        mem_left = Global.max_memory/2 - (is_here ? Machine.total_memory_here : Machine.total_memory_there)
-        error("Won't use >50% of the memory on this host (must be < #{mem_left}M)") if 
-          is_here && Machine.total_memory_here + mem > Global.max_memory/2
-        error("Won't use >50% of the memory on the other host  (must be < #{mem_left}M)") if
-          !is_here && Machine.total_memory_there + mem > Global.max_memory/2
+        # This seems clearer, why didn't I do this the first time?
+        #
+        # Leaving the logic below commented out in case I remember.
+        #
+        mem_used = Machine.total_memory_here + Machine.total_memory_there
+        if mem_used + mem > Global.max_memory
+          error("You've used #{mem_used}/#{Global.max_memory}M, so I can't allocate #{mem}M")
+        end
+        
+        #mem_left = Global.max_memory/2 - (is_here ? Machine.total_memory_here : Machine.total_memory_there)
+        #error("Won't use >50% of the memory on this host (must be < #{mem_left}M)") if 
+        #  is_here && Machine.total_memory_here + mem > Global.max_memory/2
+        #error("Won't use >50% of the memory on the other host  (must be < #{mem_left}M)") if
+        #  !is_here && Machine.total_memory_there + mem > Global.max_memory/2
 
         drbd_port ||= Machine.allocate_drbd_port
         vnc_screen ||= Machine.allocate_vnc_screen
@@ -691,6 +704,9 @@ module PairVM
       ]; end
       
       def cmd_destroy(name, no_ssh_to_peer=nil)
+
+        check_system
+
         machine = Machine.new(name)
         no_ssh_to_peer = (no_ssh_to_peer == "--no-ssh-to-peer")        
         machine.kvm.stop! if machine.kvm.running?
@@ -710,6 +726,8 @@ module PairVM
       ]; end
       
       def cmd_swap(name)
+        check_system
+
         machine = Machine.new(name)        
         machine.drbd_connect! unless machine.drbd.configured?
         error("You must run 'pairvm swap' from the home machine (i.e. the other one)") unless machine.at_home?
@@ -760,6 +778,8 @@ module PairVM
   	  ]; end
 
       def cmd_start(name, *options)
+        check_system
+
         machine = Machine.new(name)
 
         away = false
@@ -861,6 +881,8 @@ module PairVM
 	    ]; end
 	  
       def cmd_drbd_connect(name)
+        check_system
+
         machine = Machine.new(name)
         machine.drbd_connect! unless machine.drbd.configured?
         machine.drbd.setup("secondary")
@@ -876,7 +898,7 @@ module PairVM
       ]; end
       
       def parse_size(spec)
-        return case spec[-1..-1]
+          return case spec[-1..-1]
           when /[kK]/ then spec.to_i << 10
           when /[mM0123456789]/ then spec.to_i << 20
           when /[gG]/ then spec.to_i << 30
@@ -889,6 +911,7 @@ module PairVM
       end
       
       def cmd_resize(name, new_size, confirm_shrink=nil)
+        check_system
         machine = Machine.new(name)
         machine.drbd_connect! unless machine.drbd.configured?
         current_size_k = machine.disc_size >> 10
@@ -926,6 +949,7 @@ module PairVM
 	    ]; end
 	  
       def cmd_split_brain_victim(name, snapshot_size="2G")
+        check_system
         machine = Machine.new(name)
 
         if snapshot_size != "0"
@@ -934,7 +958,7 @@ module PairVM
           system("/sbin/lvcreate -n#{lv_name} -L#{snapshot_size} -s #{machine.drbd_backing_device}")
         end
 
-        machine.drbd("down")
+        machine.drbd.setup("down")
         machine.drbd_connect!(true) # do the damage now we have a backup
 
         verbose "Created snapshot #{lv_name}, original will now be overwritten by peer"
@@ -948,6 +972,7 @@ module PairVM
 	    ]; end
 	        
       def cmd_stop(name)
+        check_system
         Machine.new(name).kvm.stop!
       end
 
@@ -960,6 +985,8 @@ module PairVM
 	    ]; end
 
       def cmd_autostart(*names)
+        check_system
+
         machines = names.empty? ? Machine.all : names.map { |m| Machine.new(m) }
         machines.each do |machine|
           begin
@@ -983,6 +1010,7 @@ module PairVM
       ]; end
 
       def cmd_suppress(name, do_suppress)
+        check_system
         Machine.new(name).suppress = (do_suppress == "1")
       end
       
@@ -994,6 +1022,7 @@ module PairVM
       ]; end
       
       def cmd_monitor(name)
+        check_system
         exec("/usr/bin/socat", "-", Machine.new(name).kvm.monitorfile)
       end
       
@@ -1005,6 +1034,8 @@ module PairVM
       ]; end
       
       def cmd_list
+        check_system
+
         list = Machine.all
         if list.empty?
           print "No machines configured yet.\n"
@@ -1036,6 +1067,8 @@ module PairVM
       ]; end
 
       def cmd_print_ssh_forwards(offset=0)
+        check_system
+
         offset = offset.to_i
         print "OpenSSH port forwards: "
         num = 0
@@ -1051,6 +1084,119 @@ module PairVM
           num += 1
         end
       end
+
+      def help_first_time_setup
+        ["Initialise pairvm on a new system (interactive)",
+         [],
+         [],
+         {"--force" => "Force setup even if it looks done (dangerous)"}
+        ]
+      end
+      
+      def cmd_first_time_setup(force=nil)
+        error("Looks like setup is already done!  Use --force if you're sure") if
+          force!="--force" && File.exists?("/machines/_global")
+
+        print <<-HELLO
+Setting up pairvm!  You will need to have set your IP addresses first,
+and then you can tell me about them.  I'll prompt you if something
+doesn't look right.
+
+HELLO
+        check_system
+
+        ips = {}
+
+        [["public", "Range of public IP addresses for VMs"],
+         ["here", "This machine's IP address"],
+         ["there", "The other machine's IP address"],
+         ["here_drbd", "This machine's DRBD IP address"],
+         ["there_drbd","The other machine's DRBD IP address"]].each do |ref, description|
+
+          print "#{description}: "
+          response = STDIN.readline.chomp
+
+          check = nil
+          begin
+            check = IPAddr.new(response)
+            raise ArgumentError.new("Must be IPv4") unless check.ipv4?
+          rescue ArgumentError => ae
+            STDERR.print "Not a valid IPv4 address\n"
+            redo
+          end
+
+          if ref[0..4] == "here"
+            begin
+              TCPServer.new(response, 44444).close
+            rescue Errno::EADDRNOTAVAIL
+              STDERR.print "You must configure that address before you can use it\n"
+              redo
+            end
+          end
+
+          ips[ref] = response
+        end
+
+        Dir.mkdir("/machines") unless File.directory?("/machines")
+        File.open("/machines/_global", "w") do |fh|
+          fh.write({
+                     "drbd_ports" => "45000-46000",
+                     "ips" => ips
+                   }.
+                   to_yaml)
+        end
+
+        error("Problem generating an SSH key for root") unless 
+          Kernel::system("ssh-keygen -f ~/.ssh/id_rsa -q -P \"\"")
+
+        print "You'll need to enter the root password to the other system to install the SSH key...\n"
+
+        Dir.chdir(ENV['HOME'])
+
+        File.open(".ssh/authorized_keys", "a+") do |fh|
+          fh.print "from=\"#{ips['here']},#{ips['there']}\" "
+          fh.print File.read(".ssh/id_rsa.pub")
+          fh.print "\n"
+          fh.chmod(0600)
+        end
+
+        error("Problem copying the SSH credentials across") unless
+          Kernel::system("tar c .ssh/id_rsa .ssh/id_rsa.pub .ssh/authorized_keys "+
+                         "| ssh #{ips['there']} tar x")
+
+        print <<-DONE
+Looks good!  Now do the same on #{ips['there']}, making sure to swap
+'here' and 'there' values around.
+DONE
+        
+      end
+
+      def check_system
+        error("kvm isn't installed") unless
+          File.executable?("/usr/bin/kvm")
+
+        error("You must configure a public bridge called br0 for public IP addresses") unless
+          File.directory?("/sys/class/net/br0")
+
+        # display "wrong media type" when scanning unconfigured drbds
+        volume_groups = `vgdisplay -c 2>&1`.split("\n").
+          map { |l| l.split(":")[0].lstrip }
+
+        error("You must configure volume groups called 'here' and 'there'") unless
+          volume_groups.include?("here") && 
+          volume_groups.include?("there")
+
+        error("You must install drbd8-utils") unless
+          File.executable?("/sbin/drbdsetup")
+
+        error("You must symlink drbdadm to /bin/true - it gets in the way!") unless
+          File.symlink?("/sbin/drbdadm") &&
+          File.readlink("/sbin/drbdadm") == "/bin/true"
+
+        system("/sbin/modprobe drbd") unless File.exists?("/proc/drbd")
+      end
+
+
     end
   end
 end
@@ -1058,7 +1204,7 @@ end
 me = File.expand_path($0)
 if /_tap_(up|down)$/.match(me)
   PairVM::Commands.parse("tap_#{$1}", ARGV[0])
-else
+elsif File.exists?("/machines/_global")
   File.open("/machines/_global") do |lockfile|
     # Script must be callable by two aliases for qemu network scripts to work
     # - if this fails, you'll need to do it yourself.
@@ -1073,5 +1219,9 @@ else
       lockfile.flock(File::LOCK_UN)
     end
   end
+else
+  STDERR.print "*** pairvm does not look initialised, please run #{$0} first_time_setup\n"
+  PairVM::Commands.parse(*ARGV)
 end
+
 
