@@ -13,6 +13,7 @@
 require 'ipaddr'
 require 'yaml'
 require 'tempfile'
+require 'timeout'
 
 class IPAddr
   class << self
@@ -127,6 +128,16 @@ module PairVM
     def monitorfile
       "/machines/.#{@machine.name}.monitor"
     end
+
+    # run the given monitor command
+    def monitor_cmd(line)
+      UNIXSocket.open(monitorfile) do |m|
+        m.sync = true
+        timeout(2) { expect(m, "(qemu) ") }
+        m.write(line+"\n")
+        return expect(m, "(qemu) ")[0..-8]
+      end
+    end
     
     protected
     # The PID for the currently running KVM.  Returns nil if it's not running,
@@ -143,7 +154,15 @@ module PairVM
       end
       File.unlink(pidfile)
       nil
-    end    
+    end 
+
+    def expect(socket, string)
+      buffer = ""
+      while buffer[-string.length..-1] != string
+        buffer += socket.read(1)
+      end
+      buffer
+    end
     
     # the name of the pidfile we use, based on the Machine's name
     def pidfile
@@ -157,13 +176,13 @@ module PairVM
        "-daemonize",
        "-pidfile", pidfile,
        "-monitor", "unix:#{monitorfile},server,nowait",
-       "-drive", "file=#{@machine.drbd.node},if=virtio",
+       "-drive", "file=#{@machine.drbd.node},if=#{@machine.driver_disk}",
        "-m", @machine.memory.to_s,
        "-vnc", "127.0.0.1:"+@machine.vnc_screen.to_s,
        "-balloon", "virtio",
        # FIXME: mistake in kvm docs, says name= instead of ifname=
        "-net", "tap,ifname=#{@machine.name},script=#{me}_tap_up,downscript=#{me}_tap_down",
-       "-net", "nic,name=#{@machine.name},model=virtio,macaddr=#{@machine.macaddr}",
+       "-net", "nic,name=#{@machine.name},model=#{@machine.driver_net},macaddr=#{@machine.macaddr}",
        "-bios", "/root/bios.bin" # FIXME: configure somewhere
       ] +
       # FIXME: need to be any cleverer in merging options?
@@ -181,10 +200,13 @@ module PairVM
       #
       def all_raw
         # this got out of hand for all the use it's going to get
+        raw = []
         File.open("/proc/drbd") { |fh| fh.readline; fh.readline; fh.read }.
-          split(/\n[\d ]\d: (?=cs)/).
-          map do |raw_info|
+          split(/\n(?=[\d ]+\d: cs)/).
+          each do |raw_info|
+            number = raw_info.to_i
             info = {}
+
             raw_info.split("\n").each do |line|
               prefix_md = /\t([a-z]+): (.*)/.match(line)
               prefix = ""
@@ -206,8 +228,10 @@ module PairVM
                 end
               end
             end
-            info
+
+            raw[number] = info
           end
+        raw
       end
  
       # The number of currently-configured DRBDs on the system.
@@ -393,6 +417,9 @@ module PairVM
     def vnc_screen; get('vnc_screen'); end
     
     def ip; IPAddr.new(get('ip')); end
+
+    def driver_net; get('driver_net') || 'virtio'; end
+    def driver_disk; get('driver_disk') || 'virtio'; end
     
     def macaddr;
       mac = get('macaddr')
@@ -450,22 +477,20 @@ module PairVM
     def drbd_meta_device
       drbd_backing_device + "_meta"
     end
-    
-    # Do the setup for this machine's DRBD (disk and net) - will fail if the
-    # DRBD is already configured.
-    # 
-    def drbd_connect!(discard_my_data=false)
+
+    # Map the DRBD to a physical device - will fail if already done.
+    #
+    def drbd_attach!
       drbd.setup("disk", drbd_backing_device, drbd_meta_device, 0)
-      net_args = [
-        "#{Global.ips['here_drbd']}:#{drbd_port}",
-        "#{Global.ips['there_drbd']}:#{drbd_port}",
-        "C",
-        "--after-sb-0pri", "discard-zero-changes",
-        "--after-sb-1pri", "consensus",
-        "--after-sb-2pri", "disconnect"
-      ]
-      net_args += ["--discard-my-data"] if discard_my_data
-      drbd.setup("net", *net_args)
+    end
+
+    # Do the network setup for this machine's DRBD - will disconnect
+    # and reconfigure each time, which should be harmless.
+    # 
+    def drbd_connect!(extra_options=[])
+      drbd.setup("disconnect")
+      drbd.setup("net", *(drbd_net_args + extra_options))
+      drbd.setup("syncer", "-r", 100000)
     end
     
     # Returns a KVM object for tracking whether this Machine is actually
@@ -479,6 +504,18 @@ module PairVM
     #
     def disc_size
       File.open(drbd_backing_device) { |fh| fh.seek(0,IO::SEEK_END); fh.tell }
+    end
+
+    protected
+    def drbd_net_args
+      [
+       "#{Global.ips['here_drbd']}:#{drbd_port}",
+       "#{Global.ips['there_drbd']}:#{drbd_port}",
+        "C",
+        "--after-sb-0pri", "discard-zero-changes",
+        "--after-sb-1pri", "consensus",
+        "--after-sb-2pri", "disconnect"
+      ]
     end
   end
 
@@ -661,6 +698,7 @@ module PairVM
         )
         
         verbose "running drbd setup"
+        machine.drbd_attach!
         machine.drbd_connect!
         
         # Need to wait for DRBD to get in gear before going further
@@ -729,7 +767,8 @@ module PairVM
         check_system
 
         machine = Machine.new(name)        
-        machine.drbd_connect! unless machine.drbd.configured?
+        machine.drbd_attach! unless machine.drbd.configured?
+        machine.drbd_connect!
         error("You must run 'pairvm swap' from the home machine (i.e. the other one)") unless machine.at_home?
         error("Local disc copy is not up to date, you'll need to wait") unless machine.drbd.ds.split("/")[0] == "UpToDate"
         
@@ -777,6 +816,14 @@ module PairVM
     		}
   	  ]; end
 
+      # handy secret command for manual drbd fiddling
+      #
+      def cmd_drbdsetup(name, *options)
+        check_system
+        machine = Machine.new(name)
+        machine.drbd.setup(*options)
+      end
+
       def cmd_start(name, *options)
         check_system
 
@@ -807,8 +854,9 @@ module PairVM
           "'--away' to run it away from home" unless 
           machine.at_home? || away
 
-        #machine.drbd.setup("down")
-        machine.drbd_connect! unless machine.drbd.configured?
+        machine.drbd.setup("down")
+        machine.drbd_attach!# unless machine.drbd.configured?
+        machine.drbd_connect!
 
         # If we don't wait for DRBD to connect before we switch to primary,
         # we risk a split brain.
@@ -880,11 +928,12 @@ module PairVM
 	    	{ "name" => "The name of the VM" }
 	    ]; end
 	  
-      def cmd_drbd_connect(name)
+      def cmd_drbd_connect(name, *extra_options)
         check_system
 
         machine = Machine.new(name)
-        machine.drbd_connect! unless machine.drbd.configured?
+        machine.drbd_attach! unless machine.drbd.configured?
+        machine.drbd_connect!(extra_options)
         machine.drbd.setup("secondary")
       end
       
@@ -913,7 +962,8 @@ module PairVM
       def cmd_resize(name, new_size, confirm_shrink=nil)
         check_system
         machine = Machine.new(name)
-        machine.drbd_connect! unless machine.drbd.configured?
+        machine.drbd_attach! unless machine.drbd.configured?
+        machine.drbd_connect!
         current_size_k = machine.disc_size >> 10
         new_size_k = case new_size[0]
           when ?+ then (current_size_k << 10) + (parse_size(new_size[1..-1]))
@@ -959,7 +1009,7 @@ module PairVM
         end
 
         machine.drbd.setup("down")
-        machine.drbd_connect!(true) # do the damage now we have a backup
+        machine.drbd_connect!("--discard-my-data") # do the damage now we have a backup
 
         verbose "Created snapshot #{lv_name}, original will now be overwritten by peer"
       end
@@ -991,7 +1041,8 @@ module PairVM
         machines.each do |machine|
           begin
             if machine.at_home?
-              cmd_start(machine.name) unless machine.kvm.running?
+              cmd_start(machine.name) unless machine.kvm.running? ||
+                machine.suppress?
             else
               cmd_drbd_connect(machine.name) unless machine.drbd.configured?
             end
@@ -1011,21 +1062,59 @@ module PairVM
 
       def cmd_suppress(name, do_suppress)
         check_system
-        Machine.new(name).suppress = (do_suppress == "1")
+        Machine.new(name).suppress(do_suppress == "1")
       end
       
       def help_monitor; [
         "Start the qemu system monitor for the given VM (advanced, see 'man kvm')",
-        ["name"],
+        ["name", "command"],
         [],
-        { "name" => "The name of the VM" }
+        { "name" => "The name of the VM",
+          "command" => "The KVM command to run"
+        }
       ]; end
       
-      def cmd_monitor(name)
+      def cmd_monitor(name, *command_args)
         check_system
-        exec("/usr/bin/socat", "-", Machine.new(name).kvm.monitorfile)
+        if command_args.empty?
+          print "*** Press Ctrl+C to exit ('quit' will kill the machine) ***\n"
+          exec("/usr/bin/socat", "-", Machine.new(name).kvm.monitorfile)
+        else
+          print Machine.new(name).kvm.monitor_cmd(command_args.join(" "))
+        end
       end
-      
+
+      def help_cdrom; [
+        "Check, insert or eject a CD-ROM from the given machine",
+        ["name", "file"],
+        [],
+        { "name" => "The name of the VM",
+          "file" => "The filename or URL to insert, or 'eject'" }
+      ]; end      
+
+      def cmd_cdrom(name, spec=nil)
+        kvm = Machine.new(name).kvm
+        
+        # Find out what's in there first
+        raw = kvm.monitor_cmd("info block")
+        raw_line = raw.split("\r\n").select { |x| /^ide1-cd0:/.match(x) }[0]
+        error("No IDE CD-ROM detected in this machine") unless raw_line
+        file = /file=([^ ]+) /.match(raw_line) ? $1 : nil
+          
+        print case spec
+              when "eject"
+                kvm.monitor_cmd("eject ide1-cd0")
+              when nil
+                if file
+                  "Inserted: #{file}\n"
+                else
+                  "Empty\n"
+                end
+              else
+                kvm.monitor_cmd("change ide1-cd0 #{spec}")
+              end
+      end
+
       def help_list; [
         "List the VMs running on this host and its peer",
         [],
@@ -1175,11 +1264,14 @@ DONE
         error("kvm isn't installed") unless
           File.executable?("/usr/bin/kvm")
 
+        error("socat isn't installed") unless
+          File.executable?("/usr/bin/socat")
+
         error("You must configure a public bridge called br0 for public IP addresses") unless
           File.directory?("/sys/class/net/br0")
 
         # display "wrong media type" when scanning unconfigured drbds
-        volume_groups = `vgdisplay -c 2>&1`.split("\n").
+        volume_groups = `/sbin/vgdisplay -c 2>&1`.split("\n").
           map { |l| l.split(":")[0].lstrip }
 
         error("You must configure volume groups called 'here' and 'there'") unless
