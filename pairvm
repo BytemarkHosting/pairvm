@@ -1293,6 +1293,9 @@ DONE
   end
 end
 
+# shuts up LVM
+ENV['LVM_SUPPRESS_FD_WARNINGS'] = "1"
+
 me = File.expand_path($0)
 if /_tap_(up|down)$/.match(me)
   PairVM::Commands.parse("tap_#{$1}", ARGV[0])
