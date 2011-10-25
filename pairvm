@@ -95,13 +95,13 @@ module PairVM
     def initialize(machine)
       @machine = machine.kind_of?(Machine) ? machine : Machine.new(machine)
     end
-    
+
     # Returns true if the KVM process is running, false otherwise.
     #
     def running?
       return true if pid
     end
-    
+
     # Start this KVM process according to the machine's current settings, and
     # those found in Global.  Machine must not be running already.
     #
@@ -110,9 +110,9 @@ module PairVM
         running?
       Commands.system(*(command_line + extra_options))
     end
-    
+
     # Forcefully stops the KVM process, and wait for it to terminate
-    # 
+    #
     def stop!
       raise "KVM for #{@machine.name} is not running" if
         !running?
@@ -122,7 +122,7 @@ module PairVM
       return unless pid
       raise "KVM process #{pid} would not terminate when asked politely"
     end
-    
+
     # the name of the monitor socket we use for the running KVM, based on the
     # Machine's name.
     def monitorfile
@@ -138,7 +138,7 @@ module PairVM
         return expect(m, "(qemu) ")[0..-8]
       end
     end
-    
+
     protected
     # The PID for the currently running KVM.  Returns nil if it's not running,
     # and cleans up any stale PID in the process.
@@ -154,7 +154,7 @@ module PairVM
       end
       File.unlink(pidfile)
       nil
-    end 
+    end
 
     def expect(socket, string)
       buffer = ""
@@ -163,27 +163,27 @@ module PairVM
       end
       buffer
     end
-    
+
     # the name of the pidfile we use, based on the Machine's name
     def pidfile
       "/machines/.#{@machine.name}.pid"
     end
-    
+
     # return a suitable command line for starting the KVM
     def command_line
       me = File.expand_path($0)
       [Global.kvm,
-       "-daemonize",
-       "-pidfile", pidfile,
-       "-monitor", "unix:#{monitorfile},server,nowait",
-       "-drive", "file=#{@machine.drbd.node},if=#{@machine.driver_disk}",
-       "-m", @machine.memory.to_s,
-       "-vnc", "127.0.0.1:"+@machine.vnc_screen.to_s,
-       "-balloon", "virtio",
-       # FIXME: mistake in kvm docs, says name= instead of ifname=
-       "-net", "tap,ifname=#{@machine.name},script=#{me}_tap_up,downscript=#{me}_tap_down",
-       "-net", "nic,name=#{@machine.name},model=#{@machine.driver_net},macaddr=#{@machine.macaddr}",
-       "-bios", "/root/bios.bin" # FIXME: configure somewhere
+      "-daemonize",
+      "-pidfile", pidfile,
+      "-monitor", "unix:#{monitorfile},server,nowait",
+      "-drive", "file=#{@machine.drbd.node},if=#{@machine.driver_disk}",
+      "-m", @machine.memory.to_s,
+      "-vnc", "127.0.0.1:"+@machine.vnc_screen.to_s,
+      "-balloon", "virtio",
+      # FIXME: mistake in kvm docs, says name= instead of ifname=
+      "-net", "tap,ifname=#{@machine.name},script=#{me}_tap_up,downscript=#{me}_tap_down",
+      "-net", "nic,name=#{@machine.name},model=#{@machine.driver_net},macaddr=#{@machine.macaddr}",
+      "-bios", "/root/bios.bin" # FIXME: configure somewhere
       ] +
       # FIXME: need to be any cleverer in merging options?
       @machine.kvm_options.split(" ")
@@ -195,7 +195,7 @@ module PairVM
   #
   class DRBD
     class << self
-      # Parses /proc/drbd and returns an array of hashes, one  for each 
+      # Parses /proc/drbd and returns an array of hashes, one  for each
       # configured DRBD.
       #
       def all_raw
@@ -233,14 +233,14 @@ module PairVM
           end
         raw
       end
- 
+
       # The number of currently-configured DRBDs on the system.
       def length
         all_raw.length
       end
     end
 
-    # Initialise an object to track and control the numbered DRBD.  Will 
+    # Initialise an object to track and control the numbered DRBD.  Will
     # create the device node automatically if create is set to true.
     #
     def initialize(num, create=true)
@@ -261,7 +261,7 @@ module PairVM
       DRBD.all_raw[@num][method.to_s]
     end
 
-    # Front to drbdsetup - automatically supplies the device node, and 
+    # Front to drbdsetup - automatically supplies the device node, and
     # converts all arguments to strings, e.g. DRBD.new(0).setup("primary") will
     # likely call "drbdsetup /dev/drbd0 primary".
     #
@@ -270,24 +270,24 @@ module PairVM
         *(["/sbin/drbdsetup", node, command] + args.map { |a| a.to_s })
       )
     end
-    
+
     # Returns true if the device node exists, and is configured with some
-    # disk/net settings.  We generally use this to determine whether it's safe 
+    # disk/net settings.  We generally use this to determine whether it's safe
     # to reconfigure a DRBD.
-    # 
+    #
     def configured?
       @num < DRBD.length && self.cs != "Unconfigured"
     end
-    
+
     # The /dev node corresponding to this DRBD.
-    # 
+    #
     def node
       "/dev/drbd#{@num}"
     end
 
     # Waits for the DRBD to reach one of the given connection states, returning
     # true if it got there, or false if it timed out.
-    # 
+    #
     def wait_for_states(*desired_states)
       wait_until = Time.now + 10
       while Time.now < wait_until
@@ -315,7 +315,7 @@ module PairVM
       super("/machines/_global")
       # try to validate our cofiguration a little bit, "drbdsetup net"
       # silently fails if you give it duff IPs.
-      
+
       raise ArgumentError.new("'here' IP isn't available locally") unless
         IPAddr.local.member?(ips['here'])
       raise ArgumentError.new("'here_drbd' IP isn't available locally") unless
@@ -345,7 +345,7 @@ module PairVM
           map { |e| Machine.new(e) }.
           sort
       end
-      
+
       # Returns the total amount of memory used
       #
       def total_memory(list_all=true)
@@ -353,7 +353,7 @@ module PairVM
           select { |machine| list_all || machine.at_home? }.
           inject(0) { |sum,machine| sum + machine.memory }
       end
-      
+
       def total_memory_here(reverse=false)
         all.select { |machine| reverse ^ machine.at_home? }.
           inject(0) { |sum,machine| sum + machine.memory }
@@ -364,24 +364,24 @@ module PairVM
       def total_memory
         total_memory_here + total_memory_there
       end
-      
-      # Pick an unused DRBD port given the configured global range of DRBD 
+
+      # Pick an unused DRBD port given the configured global range of DRBD
       # ports.
-      def allocate_drbd_port 
+      def allocate_drbd_port
         (Global.drbd_ports.to_a - all.map { |m| m.drbd_port })[0]
       end
-      
+
       # Pick an unused VNC screen number (we assume we can use 0 to 200).
       def allocate_vnc_screen
         ((0..200).to_a - all.map { |m| m.vnc_screen })[0]
       end
-      
+
       # Pick an unallocated IP address from the public range, excluding the
       # first 6.
       #
       # FIXME: how to exclude IPs from other pairs of VM hosts that share
       # our public VLAN?
-      # 
+      #
       def allocate_ip
         range = Global.ips['public']
         used = all.map { |m| m.ip }
@@ -415,19 +415,19 @@ module PairVM
     def drbd_port; get('drbd_port').to_i; end
     def kvm_options; get('kvm_options'); end
     def vnc_screen; get('vnc_screen'); end
-    
+
     def ip; IPAddr.new(get('ip')); end
 
     def driver_net; get('driver_net') || 'virtio'; end
     def driver_disk; get('driver_disk') || 'virtio'; end
-    
+
     def macaddr;
       mac = get('macaddr')
-      set('macaddr', mac = sprintf("%02x:%02x:%02x:%02x:%02x:%02x", 
-        2, 0, 
-        Global.ips['here'].to_i & 255, 
-        Global.ips['there'].to_i & 255, 
-        (vnc_screen >> 8) & 255, 
+      set('macaddr', mac = sprintf("%02x:%02x:%02x:%02x:%02x:%02x",
+        2, 0,
+        Global.ips['here'].to_i & 255,
+        Global.ips['there'].to_i & 255,
+        (vnc_screen >> 8) & 255,
         vnc_screen & 255
       )) unless mac
       mac
@@ -439,15 +439,15 @@ module PairVM
       home_machine_cache = home_machine # pointless repeated reloads
       IPAddr.local.member?(home_machine_cache)
     end
-    
+
     # Returns true if we are running on our configured "away" machine
     #
     def away?
       !at_home?
     end
-    
+
     # Returns the DRBD object for this VM
-    # 
+    #
     def drbd
       DRBD.new(drbd_node_number)
     end
@@ -464,7 +464,7 @@ module PairVM
       here_or_there = at_home? ? "here" : "there"
       "/dev/#{here_or_there}/#{name}"
     end
-    
+
     # Returns the expected backing device for this VM on the other host
     #
     def drbd_backing_device_there
@@ -486,20 +486,20 @@ module PairVM
 
     # Do the network setup for this machine's DRBD - will disconnect
     # and reconfigure each time, which should be harmless.
-    # 
+    #
     def drbd_connect!(extra_options=[])
       drbd.setup("disconnect")
       drbd.setup("net", *(drbd_net_args + extra_options))
       drbd.setup("syncer", "-r", 100000)
     end
-    
+
     # Returns a KVM object for tracking whether this Machine is actually
     # running or not.
-    # 
+    #
     def kvm
       @kvm ||= KVM.new(self)
     end
-    
+
     # Returns the number of bytes for this VM's disc
     #
     def disc_size
@@ -509,8 +509,8 @@ module PairVM
     protected
     def drbd_net_args
       [
-       "#{Global.ips['here_drbd']}:#{drbd_port}",
-       "#{Global.ips['there_drbd']}:#{drbd_port}",
+      "#{Global.ips['here_drbd']}:#{drbd_port}",
+      "#{Global.ips['there_drbd']}:#{drbd_port}",
         "C",
         "--after-sb-0pri", "discard-zero-changes",
         "--after-sb-1pri", "consensus",
@@ -524,7 +524,7 @@ module PairVM
   module Commands
     class << self
       # Report an error and stop running
-      # 
+      #
       def error(msg, exception=nil)
         # RuntimeErrors are conditions we catch and raise ourselves
         if exception && (@verbose || !exception.kind_of?(RuntimeError))
@@ -536,8 +536,8 @@ module PairVM
         STDERR.print("*** #{msg}\n")
         exit 1
       end
-      
-      # 
+
+      #
       #
       def verbose(msg)
         STDERR.print "#{msg}\n" if @verbose
@@ -570,35 +570,35 @@ module PairVM
         error("No such command '#{cmd}' - Try #{$0} help") unless respond_to?(cmd_sym)
         begin
           __send__(cmd_sym, *args)
-		    rescue ArgumentError => ex
+                    rescue ArgumentError => ex
           # assume the user can fix these, report them nicely
           help_sym = "help_#{cmd}".to_sym
           raise unless respond_to?(help_sym)
           error(ex.to_s + " - Try #{$0} help #{cmd}", @verbose ? ex : nil)
-		    end
+                    end
       end
-      
+
       def help_help; [
         "Shows help",
         ["command"],
         [],
         { "command" => "The command you want help with " }
       ]; end
-      
+
       def cmd_help(command=nil)
         if command
           # Show help on one command
           begin
             description, compulsory, optional, parameter_descriptions = *__send__("help_#{command}".to_sym)
           rescue NoMethodError => nme
-            error "No such command '#{command}', type '#{$0} help' for the list" 
+            error "No such command '#{command}', type '#{$0} help' for the list"
           end
-          
+
           print "Syntax: #{$0} #{command} "
           print compulsory.map { |param| "<#{param}> " }.join
           print optional.map   { |param| "[#{param}] " }.join
           print "\n\n#{description}\n\n"
-          
+
           (compulsory+optional).each do |param|
             printf "%16s - %s\n", param, parameter_descriptions[param]
           end
@@ -606,12 +606,12 @@ module PairVM
           # Show general help
           print "Syntax: #{$0} [--verbose] <command> ...\n\n"+
             "Where <command> is one of:\n\n"
-        
+
           commands = methods.map { |m| /^help_(.*)/.match(m) ? $1 : nil }.compact.sort
-        
+
           commands.each do |command|
             description, compulsory, optional, parameter_descriptions = *__send__("help_#{command}".to_sym)
-          
+
             printf "  %10s ", command
             print compulsory.map { |param| "<#{param}> " }.join
             print optional.map   { |param| "[#{param}] " }.join
@@ -619,23 +619,23 @@ module PairVM
           end
         end
       end
-	  
-	    def help_create; [
-  	    "Creates a new virtual machine",
-	      ["name", "here|there|IP", "memory", "disc_size"],
-	    	["ip", "drbd_port", "kvm_options", "vnc_screen", "--no-ssh-to-peer"],
-	    	{ "name" => "The name of the VM (15 chars max)",
-    		  "here|there|IP" => "The IP of the machine to run on (or 'here' or 'there')",
-	    	  "memory" => "The number of megabytes of memory to allocate",
-	    	  "disc_size" => "The size of disc to allocate (include prefix, e.g. 50G)",
-	    	  "ip" => "The IP address to use (default is to auto-allocate)",
-	    	  "drbd_port" => "The DRBD port to use (default is to auto-allocate)",
-	    	  "kvm_options" => "Any permanent KVM options for this VM (default is empty)",
-	    	  "vnc_screen" => "The VNC screen number (default is to auto-allocate)",
-	    	  "--no-ssh-to-peer" => "Don't connect via SSH to peer to run the same command"
-    		}
-  	  ]; end
-	  
+
+            def help_create; [
+            "Creates a new virtual machine",
+              ["name", "here|there|IP", "memory", "disc_size"],
+                ["ip", "drbd_port", "kvm_options", "vnc_screen", "--no-ssh-to-peer"],
+                { "name" => "The name of the VM (15 chars max)",
+                  "here|there|IP" => "The IP of the machine to run on (or 'here' or 'there')",
+                  "memory" => "The number of megabytes of memory to allocate",
+                  "disc_size" => "The size of disc to allocate (include prefix, e.g. 50G)",
+                  "ip" => "The IP address to use (default is to auto-allocate)",
+                  "drbd_port" => "The DRBD port to use (default is to auto-allocate)",
+                  "kvm_options" => "Any permanent KVM options for this VM (default is empty)",
+                  "vnc_screen" => "The VNC screen number (default is to auto-allocate)",
+                  "--no-ssh-to-peer" => "Don't connect via SSH to peer to run the same command"
+                }
+          ]; end
+
       def cmd_create(name, here_or_there, mem, disc_size, ip=nil, drbd_port=nil, kvm_options="", vnc_screen=nil, no_ssh_to_peer=nil)
 
         check_system
@@ -647,10 +647,10 @@ module PairVM
         elsif !/^t?here$/.match(here_or_there)
           error("Must supply 'here' or 'there' or IP address ('#{here_or_there}' is none of those)")
         end
-        
+
         is_here = (here_or_there == "here")
         mem = mem.to_i
-        
+
         # This seems clearer, why didn't I do this the first time?
         #
         # Leaving the logic below commented out in case I remember.
@@ -659,9 +659,9 @@ module PairVM
         if mem_used + mem > Global.max_memory
           error("You've used #{mem_used}/#{Global.max_memory}M, so I can't allocate #{mem}M")
         end
-        
+
         #mem_left = Global.max_memory/2 - (is_here ? Machine.total_memory_here : Machine.total_memory_there)
-        #error("Won't use >50% of the memory on this host (must be < #{mem_left}M)") if 
+        #error("Won't use >50% of the memory on this host (must be < #{mem_left}M)") if
         #  is_here && Machine.total_memory_here + mem > Global.max_memory/2
         #error("Won't use >50% of the memory on the other host  (must be < #{mem_left}M)") if
         #  !is_here && Machine.total_memory_there + mem > Global.max_memory/2
@@ -670,11 +670,11 @@ module PairVM
         vnc_screen ||= Machine.allocate_vnc_screen
         ip ||= Machine.allocate_ip
         no_ssh_to_peer = (no_ssh_to_peer == "--no-ssh-to-peer")
-        
+
         error("No DRBD ports left to allocate") unless drbd_port
         error("No VNC screens  left to allocate") unless vnc_screen
         error("No IP addresses left to allocate") unless ip
-        
+
         # Create our logical volumes - 128MB fixed metadata
 
         verbose "creating #{name}"
@@ -687,7 +687,7 @@ module PairVM
           "vnc_screen" => vnc_screen.to_i,
           "memory" => mem
         })
-        
+
         # drbd name seems to be ignored for the 'create-md'
         # command, but it needs to be valid, and not configured.
         #
@@ -696,17 +696,17 @@ module PairVM
         system("/sbin/drbdmeta --force /dev/drbd9999999999 "+
           "v08 #{machine.drbd_meta_device} 0 create-md"
         )
-        
+
         verbose "running drbd setup"
         machine.drbd_attach!
         machine.drbd_connect!
-        
+
         # Need to wait for DRBD to get in gear before going further
-        error "DRBD in unexpected state: #{machine.drbd.cs}" unless 
+        error "DRBD in unexpected state: #{machine.drbd.cs}" unless
           machine.drbd.wait_for_states("WFConnection", "Connected", "SyncSource", "SyncTarget")
-        
+
         machine.drbd.setup("primary", "-o") if machine.at_home?
-        
+
         if !no_ssh_to_peer
           verbose("ssh to other host")
           # Now do the same on the other host
@@ -714,8 +714,8 @@ module PairVM
           ssh_command  = ["ssh", Global.ips['there'], $0]
           ssh_command += ["-v"] if @verbose
           ssh_command += [
-            "create", 
-            name, 
+            "create",
+            name,
             Global.ips[is_here ? 'here' : 'there'].to_s, # specify same host!
             mem,
             disc_size,
@@ -726,57 +726,57 @@ module PairVM
             "--no-ssh-to-peer" # avoid a loop thanks
           ]
           system(*ssh_command)
-        
-          error("DRBD didn't connect to peer properly, please investigate") unless 
+
+          error("DRBD didn't connect to peer properly, please investigate") unless
             machine.drbd.wait_for_states("Connected", "SyncSource", "SyncTarget")
         end
       end
-      
+
       def help_destroy; [
         "Destroys a virtual machine on this machine and its peer (DANGER!)",
         ["name"],
         ["--no-ssh-to-peer"],
         { "name" => "The name of the VM",
-	    	  "--no-ssh-to-peer" => "Don't connect via SSH to peer to run the same command"
+                  "--no-ssh-to-peer" => "Don't connect via SSH to peer to run the same command"
         }
       ]; end
-      
+
       def cmd_destroy(name, no_ssh_to_peer=nil)
 
         check_system
 
         machine = Machine.new(name)
-        no_ssh_to_peer = (no_ssh_to_peer == "--no-ssh-to-peer")        
+        no_ssh_to_peer = (no_ssh_to_peer == "--no-ssh-to-peer")
         machine.kvm.stop! if machine.kvm.running?
         machine.drbd.setup("down") if machine.drbd.configured?
         system("/sbin/lvremove", "-f", machine.drbd_backing_device)
-        system("/sbin/lvremove", "-f", machine.drbd_meta_device)        
+        system("/sbin/lvremove", "-f", machine.drbd_meta_device)
         is_at_home = machine.at_home? # about to destroy machine
         File.unlink("/machines/#{machine.name}")
         system("ssh", Global.ips['there'], $0, "destroy", name, "--no-ssh-to-peer") unless no_ssh_to_peer
       end
-      
+
       def help_swap; [
         "Move a VM to the other server (very slow, copies data)",
         ["name"],
         [],
         { "name" => "The name of the VM to move" }
       ]; end
-      
+
       def cmd_swap(name)
         check_system
 
-        machine = Machine.new(name)        
+        machine = Machine.new(name)
         machine.drbd_attach! unless machine.drbd.configured?
         machine.drbd_connect!
         error("You must run 'pairvm swap' from the home machine (i.e. the other one)") unless machine.at_home?
         error("Local disc copy is not up to date, you'll need to wait") unless machine.drbd.ds.split("/")[0] == "UpToDate"
-        
+
         # Stops the VM here, destroys it fully on the other host, and almost
         # destroys it here (instead renames its backing volume).
-        # 
+        #
         machine.kvm.stop! if machine.kvm.running?
-        machine.drbd.setup("down") if machine.drbd.configured?            
+        machine.drbd.setup("down") if machine.drbd.configured?
         tmp_backing_device = machine.drbd_backing_device + "_moving_#{$$}"
         old_mem = machine.memory
         old_disc_size = "#{machine.disc_size >> 10}K"
@@ -788,7 +788,7 @@ module PairVM
         system("/sbin/lvremove", "-f", machine.drbd_meta_device)
         File.unlink("/machines/#{machine.name}")
         system("ssh", Global.ips['there'], $0, "destroy", name, "--no-ssh-to-peer")
-        
+
         # Now recreate the VM here from the old source data.  The create command
         # will prematurely start syncing the blank machine, so we stop it and
         # start again after copying the old data to the backing device.
@@ -796,25 +796,25 @@ module PairVM
         # This is a slightly odd state of affairs, because we are creating a
         # machine 'there', but forcing ourselves into the primary state so that
         # our data overwrites that on the new "home" machine.
-        # 
+        #
         cmd_create(name, "there", old_mem, old_disc_size, old_ip, old_drbd_port, old_kvm_options, old_vnc_screen)
         machine.drbd.setup("down")
         system("dd", "if=#{tmp_backing_device}", "of=#{machine.drbd_backing_device}")
         system("/sbin/lvremove", "-f", tmp_backing_device)
         machine.drbd_connect!
         system("ssh", Global.ips['there'], $0, "split_brain_victim", name, "0")
-      end      
-      
-  	  def help_start; [
-  	    "Starts a virtual machine running on this host",
-    		["name"],
-    		["--away", "--disconnected", "--kvm-options"],
-  	  	{ "name" => "The name of the VM",
-  		    "--away" => "Force VM to run when not on its home machine",
-  		    "--disconnected" => "Force VM to run without replicating to peer",
-    		  "--kvm-options <options...>" => "Extra KVM options for this boot"
-    		}
-  	  ]; end
+      end
+
+          def help_start; [
+            "Starts a virtual machine running on this host",
+                ["name"],
+                ["--away", "--disconnected", "--kvm-options"],
+                { "name" => "The name of the VM",
+                    "--away" => "Force VM to run when not on its home machine",
+                    "--disconnected" => "Force VM to run without replicating to peer",
+                  "--kvm-options <options...>" => "Extra KVM options for this boot"
+                }
+          ]; end
 
       # handy secret command for manual drbd fiddling
       #
@@ -846,12 +846,12 @@ module PairVM
               error "Unknown option #{o}"
           end
         end
-        
+
         verbose "starting #{name} #{machine.at_home? ? 'at home' : 'away'}"+
           " away=#{away} destroy_peer=#{disconnected}"
 
         error "#{name} is not meant to run here, you must add "+
-          "'--away' to run it away from home" unless 
+          "'--away' to run it away from home" unless
           machine.at_home? || away
 
         machine.drbd.setup("down")
@@ -872,7 +872,7 @@ module PairVM
               "split brain later)."
           end
         end
-        
+
         # Push other host into secondary state
         #
         if !disconnected
@@ -881,35 +881,35 @@ module PairVM
           ssh_command += ["drbd_connect", machine.name]
           system(*ssh_command)
         end
-        
+
         # Now this should work without error
         #
         machine.drbd.setup("primary")
-        
+
         if !machine.kvm.running?
           print "Starting #{machine.name}\n"
           machine.kvm.start!(kvm_options)
         end
       end
-	  
-  	  def help_tap_up; [
-	      "Used internally by qemu to start network interface after KVM startup",
-		    ["name"],
-    		[],
-    		{ "name" => "The name of the VM (and network interface)" }
-	      ]; end
+
+          def help_tap_up; [
+              "Used internally by qemu to start network interface after KVM startup",
+                    ["name"],
+                [],
+                { "name" => "The name of the VM (and network interface)" }
+              ]; end
 
       def cmd_tap_up(name)
         system "/sbin/ip link set #{name} up promisc on"
         system "/usr/sbin/brctl addif br0 #{name}"
       end
-	  
-  	  def help_tap_down; [
-	      "Used internally by qemu to stop network interface after KVM shutdown",
-    		["name"],
-    		[],
-    		{ "name" => "The name of the VM (and network interface)" }
-  	  ]; end
+
+          def help_tap_down; [
+              "Used internally by qemu to stop network interface after KVM shutdown",
+                ["name"],
+                [],
+                { "name" => "The name of the VM (and network interface)" }
+          ]; end
 
       def cmd_tap_down(name)
         machine = Machine.new(name)
@@ -920,14 +920,14 @@ module PairVM
         # FIXME: this is too early, kvm needs better supervision
         machine.drbd.setup("secondary")
       end
-	  
-	    def help_drbd_connect; [
-	      "Set up the DRBD for the given machine as a secondary (which can be promoted later)",
-	    	["name"],
-	    	[],
-	    	{ "name" => "The name of the VM" }
-	    ]; end
-	  
+
+            def help_drbd_connect; [
+              "Set up the DRBD for the given machine as a secondary (which can be promoted later)",
+                ["name"],
+                [],
+                { "name" => "The name of the VM" }
+            ]; end
+
       def cmd_drbd_connect(name, *extra_options)
         check_system
 
@@ -936,16 +936,16 @@ module PairVM
         machine.drbd_connect!(extra_options)
         machine.drbd.setup("secondary")
       end
-      
+
       def help_resize; [
         "Resize the given server's disc",
         ["name", "size"],
         [],
-        { "name" => "The name of the VM", 
+        { "name" => "The name of the VM",
           "size" => "The new size (either +, - or absolute size)",
           "--confirm-shrink" => "You'll need to supply this if you want to shrink the disc" }
       ]; end
-      
+
       def parse_size(spec)
           return case spec[-1..-1]
           when /[kK]/ then spec.to_i << 10
@@ -958,7 +958,7 @@ module PairVM
             error("Don't understand size spec #{spec}")
         end
       end
-      
+
       def cmd_resize(name, new_size, confirm_shrink=nil)
         check_system
         machine = Machine.new(name)
@@ -972,14 +972,14 @@ module PairVM
           else
             error("Don't understand size")
         end >> 10
-        
+
         return if new_size_k == current_size_k
         confirm_shrink = (confirm_shrink == "--confirm-shrink")
-        error("You must supply --confirm-shrink if you intend to shrink this disc") unless 
+        error("You must supply --confirm-shrink if you intend to shrink this disc") unless
           new_size_k > current_size_k || confirm_shrink
-        error("Can't resize the disc until DRBD is connected and in sync") unless 
+        error("Can't resize the disc until DRBD is connected and in sync") unless
           machine.drbd.wait_for_states("Connected")
-        
+
         if new_size_k > current_size_k
           system("/sbin/lvresize", "--size", "#{new_size_k}K", machine.drbd_backing_device)
           system("ssh", Global.ips['there'], "lvresize", "--size", "#{new_size_k}K", machine.drbd_backing_device_there)
@@ -988,16 +988,16 @@ module PairVM
           error("Sorry, shrinking not implemented yet")
         end
       end
-	  
-	    def help_split_brain_victim; [
-	      "Designate the VM data on this host as a 'split brain victim' and erase it to resume replication",
-	     	["name"],
-  		  [],
-      	{ "name" => "The name of the VM" ,
-	    	  "snapshot_size" => "The size of the snapshot to create before erasing the data (default 2G, say '0' if you just want to erase it)"
-	    	}
-	    ]; end
-	  
+
+            def help_split_brain_victim; [
+              "Designate the VM data on this host as a 'split brain victim' and erase it to resume replication",
+                ["name"],
+                  [],
+        { "name" => "The name of the VM" ,
+                  "snapshot_size" => "The size of the snapshot to create before erasing the data (default 2G, say '0' if you just want to erase it)"
+                }
+            ]; end
+
       def cmd_split_brain_victim(name, snapshot_size="2G")
         check_system
         machine = Machine.new(name)
@@ -1013,26 +1013,26 @@ module PairVM
 
         verbose "Created snapshot #{lv_name}, original will now be overwritten by peer"
       end
-	  
-	    def help_stop; [
-	      "Immediately kill the given VM (power off)",
+
+            def help_stop; [
+              "Immediately kill the given VM (power off)",
         ["name"],
-	  	  [],
-    		{ "name" => "The name of the VM" }
-	    ]; end
-	        
+                  [],
+                { "name" => "The name of the VM" }
+            ]; end
+
       def cmd_stop(name)
         check_system
         Machine.new(name).kvm.stop!
       end
 
-	  
-	    def help_autostart; [
-	      "Start all VMs and DRBD connections that should run on this peer",
+
+            def help_autostart; [
+              "Start all VMs and DRBD connections that should run on this peer",
         [],
-	  	  ["names ..."],
-    		{ "names ..." => "Names of VMs to start automatically (default is all of them)" }
-	    ]; end
+                  ["names ..."],
+                { "names ..." => "Names of VMs to start automatically (default is all of them)" }
+            ]; end
 
       def cmd_autostart(*names)
         check_system
@@ -1051,7 +1051,7 @@ module PairVM
           end
         end
       end
-      
+
       def help_suppress; [
         "Suppress the given VM from starting automatically",
         ["name", "do_suppress"],
@@ -1064,7 +1064,7 @@ module PairVM
         check_system
         Machine.new(name).suppress(do_suppress == "1")
       end
-      
+
       def help_monitor; [
         "Start the qemu system monitor for the given VM (advanced, see 'man kvm')",
         ["name", "command"],
@@ -1073,7 +1073,7 @@ module PairVM
           "command" => "The KVM command to run"
         }
       ]; end
-      
+
       def cmd_monitor(name, *command_args)
         check_system
         if command_args.empty?
@@ -1090,17 +1090,17 @@ module PairVM
         [],
         { "name" => "The name of the VM",
           "file" => "The filename or URL to insert, or 'eject'" }
-      ]; end      
+      ]; end
 
       def cmd_cdrom(name, spec=nil)
         kvm = Machine.new(name).kvm
-        
+
         # Find out what's in there first
         raw = kvm.monitor_cmd("info block")
         raw_line = raw.split("\r\n").select { |x| /^ide1-cd0:/.match(x) }[0]
         error("No IDE CD-ROM detected in this machine") unless raw_line
         file = /file=([^ ]+) /.match(raw_line) ? $1 : nil
-          
+
         print case spec
               when "eject"
                 kvm.monitor_cmd("eject ide1-cd0")
@@ -1121,7 +1121,7 @@ module PairVM
         [],
         {}
       ]; end
-      
+
       def cmd_list
         check_system
 
@@ -1132,8 +1132,8 @@ module PairVM
         end
         print "Name            Memory Disc Run?    Home?   VNC  Disc state MAC\n"
         list.each do |machine|
-          printf "%-15s %-6s %-4s %-s %-s :%-3d %-10s %s\n", 
-            machine.name, 
+          printf "%-15s %-6s %-4s %-s %-s :%-3d %-10s %s\n",
+            machine.name,
             machine.memory.to_s + "M",
             (machine.disc_size >> 30).to_s + "G",
             machine.kvm.running? ?  "Running" : "Stopped",
@@ -1142,12 +1142,12 @@ module PairVM
             machine.drbd.configured? ? machine.drbd.cs : "Not set up",
             machine.macaddr
         end
-        
+
         print "\nTotal RAM here: #{Machine.total_memory_here}M "+
           "there: #{Machine.total_memory_there}M "+
           "max: #{Global.max_memory}M\n"
       end
-      
+
       def help_print_ssh_forwards; [
         "Print a list of SSH port forward specifications to access the consoles of any VM on this peer",
         ["offset"],
@@ -1176,12 +1176,12 @@ module PairVM
 
       def help_first_time_setup
         ["Initialise pairvm on a new system (interactive)",
-         [],
-         [],
-         {"--force" => "Force setup even if it looks done (dangerous)"}
+        [],
+        [],
+        {"--force" => "Force setup even if it looks done (dangerous)"}
         ]
       end
-      
+
       def cmd_first_time_setup(force=nil)
         error("Looks like setup is already done!  Use --force if you're sure") if
           force!="--force" && File.exists?("/machines/_global")
@@ -1197,10 +1197,10 @@ HELLO
         ips = {}
 
         [["public", "Range of public IP addresses for VMs"],
-         ["here", "This machine's IP address"],
-         ["there", "The other machine's IP address"],
-         ["here_drbd", "This machine's DRBD IP address"],
-         ["there_drbd","The other machine's DRBD IP address"]].each do |ref, description|
+        ["here", "This machine's IP address"],
+        ["there", "The other machine's IP address"],
+        ["here_drbd", "This machine's DRBD IP address"],
+        ["there_drbd","The other machine's DRBD IP address"]].each do |ref, description|
 
           print "#{description}: "
           response = STDIN.readline.chomp
@@ -1229,13 +1229,13 @@ HELLO
         Dir.mkdir("/machines") unless File.directory?("/machines")
         File.open("/machines/_global", "w") do |fh|
           fh.write({
-                     "drbd_ports" => "45000-46000",
-                     "ips" => ips
-                   }.
-                   to_yaml)
+                    "drbd_ports" => "45000-46000",
+                    "ips" => ips
+                  }.
+                  to_yaml)
         end
 
-        error("Problem generating an SSH key for root") unless 
+        error("Problem generating an SSH key for root") unless
           Kernel::system("ssh-keygen -f ~/.ssh/id_rsa -q -P \"\"")
 
         print "You'll need to enter the root password to the other system to install the SSH key...\n"
@@ -1251,13 +1251,13 @@ HELLO
 
         error("Problem copying the SSH credentials across") unless
           Kernel::system("tar c .ssh/id_rsa .ssh/id_rsa.pub .ssh/authorized_keys "+
-                         "| ssh #{ips['there']} tar x")
+                        "| ssh #{ips['there']} tar x")
 
         print <<-DONE
 Looks good!  Now do the same on #{ips['there']}, making sure to swap
 'here' and 'there' values around.
 DONE
-        
+
       end
 
       def check_system
@@ -1275,7 +1275,7 @@ DONE
           map { |l| l.split(":")[0].lstrip }
 
         error("You must configure volume groups called 'here' and 'there'") unless
-          volume_groups.include?("here") && 
+          volume_groups.include?("here") &&
           volume_groups.include?("there")
 
         error("You must install drbd8-utils") unless
@@ -1302,7 +1302,7 @@ elsif File.exists?("/machines/_global")
     # - if this fails, you'll need to do it yourself.
     File.symlink(me, me+"_tap_up") unless File.symlink?(me+"_tap_up")
     File.symlink(me, me+"_tap_down") unless File.symlink?(me+"_tap_down")
-    
+
     # there's nothing safe about running two of this script
     lockfile.flock(File::LOCK_EX)
     begin
