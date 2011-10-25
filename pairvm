@@ -824,6 +824,11 @@ module PairVM
         machine.drbd.setup(*options)
       end
 
+      def cmd_read(name, option)
+        check_system
+        print Machine.new(name).send(option.to_sym).to_s + "\n"
+      end
+
       def cmd_start(name, *options)
         check_system
 
