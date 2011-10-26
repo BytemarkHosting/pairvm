@@ -185,8 +185,23 @@ module PairVM
       "-net", "nic,name=#{@machine.name},model=#{@machine.driver_net},macaddr=#{@machine.macaddr}",
       "-bios", "/root/bios.bin" # FIXME: configure somewhere
       ] +
+      command_line_incoming +
       # FIXME: need to be any cleverer in merging options?
       @machine.kvm_options.split(" ")
+    end
+
+    # Add command line options to KVM to take a memory dump file into account,
+    # if we have one.  Otherwise remove one if it's outdated.
+    #
+    def command_line_incoming
+      if File.file?(@machine.memory_dump_file)
+        if Time.now - File.stat(@machine.memory_dump_file).mtime < 120
+          return ["-incoming", "exec: gzip -c -d #{@machine.memory_dump_file}"]
+        else
+          File.unlink(@machine.memory_dump_file)
+        end
+      end
+      []
     end
   end
 
@@ -506,6 +521,10 @@ module PairVM
       File.open(drbd_backing_device) { |fh| fh.seek(0,IO::SEEK_END); fh.tell }
     end
 
+    def memory_dump_file
+      "/machines/_#{name}_memory_dump.gz"
+    end
+
     protected
     def drbd_net_args
       [
@@ -804,17 +823,44 @@ module PairVM
         machine.drbd_connect!
         system("ssh", Global.ips['there'], $0, "split_brain_victim", name, "0")
       end
+      
+      def help_swaplive; [
+        "Move a VM to the other server (live, doesn't move data)",
+        ["name"],
+        ["--away"],
+        { "name" => "The name of the VM to move",
+          "--away" => "You must set this if moving from the home machine"
+        }
+      ]; end
 
-          def help_start; [
-            "Starts a virtual machine running on this host",
-                ["name"],
-                ["--away", "--disconnected", "--kvm-options"],
-                { "name" => "The name of the VM",
-                    "--away" => "Force VM to run when not on its home machine",
-                    "--disconnected" => "Force VM to run without replicating to peer",
-                  "--kvm-options <options...>" => "Extra KVM options for this boot"
-                }
-          ]; end
+      def cmd_swaplive(name, away=nil)
+        check_system
+        machine = Machine.new(name)
+
+        away = (away == "--away")
+
+        error("Can't move if machine isn't running") unless machine.kvm.running?
+        error("Must specify --away if moving from the home machine") if
+          machine.at_home? && !away
+
+        machine.kvm.monitor_cmd("stop")
+        machine.kvm.monitor_cmd("migrate_set_speed 4095m")
+        machine.kvm.monitor_cmd("migrate \"exec: pairvm_send_memory #{machine.name}\"")
+        cmd_stop(machine.name)
+        machine.drbd.setup("secondary")        
+
+        # use --disconnected to avoid a connection back to ourselves and deadlock
+        cmd = ["ssh", Global.ips['there'], $0, "start", "#{machine.name}", "--disconnected"]
+        cmd += ["--away"] if away
+        system(*cmd)
+      end
+
+      def cmd_send_memory(name)
+        machine = Machine.new(name)
+        (1..255).each { |fd| IO.for_fd(fd).close rescue nil }
+        exec("gzip -c | ssh #{Global.ips['there']} cat \\\>#{machine.memory_dump_file}")
+#        exec("gzip -c >/tmp/out")
+      end
 
       # handy secret command for manual drbd fiddling
       #
@@ -823,6 +869,17 @@ module PairVM
         machine = Machine.new(name)
         machine.drbd.setup(*options)
       end
+
+      def help_start; [
+        "Starts a virtual machine running on this host",
+        ["name"],
+        ["--away", "--disconnected", "--kvm-options"],
+         { "name" => "The name of the VM",
+           "--away" => "Force VM to run when not on its home machine",
+         "--disconnected" => "Force VM to run without replicating to peer",
+         "--kvm-options <options...>" => "Extra KVM options for this boot"
+         }
+      ]; end
 
       def cmd_start(name, *options)
         check_system
@@ -889,6 +946,7 @@ module PairVM
         if !machine.kvm.running?
           print "Starting #{machine.name}\n"
           machine.kvm.start!(kvm_options)
+          system "/usr/sbin/arping -q -s #{machine.macaddr} -S #{machine.ip} -B -c 1 -i br0 -p || true"
         end
       end
 
@@ -920,6 +978,7 @@ module PairVM
         # FIXME: this is too early, kvm needs better supervision
         machine.drbd.setup("secondary")
       end
+      
 
             def help_drbd_connect; [
               "Set up the DRBD for the given machine as a secondary (which can be promoted later)",
@@ -1264,6 +1323,9 @@ DONE
         error("kvm isn't installed") unless
           File.executable?("/usr/bin/kvm")
 
+        error("arping isn't installed") unless
+          File.executable?("/usr/sbin/arping")
+
         error("socat isn't installed") unless
           File.executable?("/usr/bin/socat")
 
@@ -1294,14 +1356,15 @@ DONE
 end
 
 me = File.expand_path($0)
-if /_tap_(up|down)$/.match(me)
-  PairVM::Commands.parse("tap_#{$1}", ARGV[0])
+if /pairvm_([a-z_]+)$/.match(me)
+  PairVM::Commands.parse($1, *ARGV)
 elsif File.exists?("/machines/_global")
   File.open("/machines/_global") do |lockfile|
     # Script must be callable by two aliases for qemu network scripts to work
     # - if this fails, you'll need to do it yourself.
     File.symlink(me, me+"_tap_up") unless File.symlink?(me+"_tap_up")
     File.symlink(me, me+"_tap_down") unless File.symlink?(me+"_tap_down")
+    File.symlink(me, me+"_send_memory") unless File.symlink?(me+"_send_memory")
 
     # there's nothing safe about running two of this script
     lockfile.flock(File::LOCK_EX)
