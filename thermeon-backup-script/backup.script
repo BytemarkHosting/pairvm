@@ -1,0 +1,706 @@
+#!/usr/bin/ruby
+#
+# backup.script - A simple backup script
+#
+# SYNOPSIS
+#
+#  Usage: backup.script [options]
+#
+# OPTIONS
+#
+#   --help    Show this simple help.
+#
+#   --test    Show the machines that would be backed up, without actually
+#            running a backup.
+#
+#   --verbose Show more detailed output.
+#
+# OVERVIEW
+#
+#  This backup script is designed to correctly cope with the Thermeon
+# KVM-host setup, which has pairs of machines running with redundent
+# DRBD bevices split across pairs of machines
+#
+#  Each KVM guest is stored upon such a block device, which in turn is
+# located upon LVM snapshots in one of two volumes:
+#
+#    "here"  - For guests that should run upon this host.
+#
+#   "there"  - For remote copies.
+#
+#  The backup script is designed to archive each guest which is located
+# upon the local "here" volume, via a series of steps:
+#
+#   1.  Sync the KVM guest's disks.
+#
+#   2.  Create an LVM snapshot of that disk.
+#
+#   3.  Mount it upon the host, at /mnt
+#
+#   4.  Use rsync to archive the filesystem contents remotely
+#
+#   5.  Cleanup.
+#
+#
+# EOH - needed for --help marker.
+#
+# Steve
+# --
+#
+
+require 'getoptlong'
+require 'logger'
+
+Log = Logger.new(STDOUT)
+Log.level = 1
+
+#
+#  Additional method for the Process namespace.
+#
+module Process
+
+  #
+  # Is the given PID alive and running?
+  #
+  # Return "true" if alive, false otherwise.
+  #
+  def Process.running?( pid )
+    begin
+      Process::kill 0, Integer(pid)
+      true
+    rescue Errno::ESRCH
+      false
+    end
+  end
+end
+
+
+#
+#  A helper class for running system commands.  This class covers two cases:
+#
+#   * Commands that must not fail.
+#
+#   * Commands that are permitted to silently fail.
+#
+#
+class System
+
+  def System.run_or_abort( cmd )
+    Kernel.system( cmd ) && return
+
+    Log.error "Command failde: #{cmd}"
+  end
+
+  def System.run_silently( cmd )
+    Kernel.system( "#{cmd} >/dev/null 2>/dev/null" )
+  end
+end
+
+
+
+#
+# Determine the names of local guests.
+#
+# It is assumed that the name of a guest is the same as its storage node,
+# which is an assumption which is valid - on the basis that the only
+# significant thing we care about is the LVM-backend in use.  The actual
+# details of the guest are 100% irrelevent.
+#
+#
+class AllGuests
+
+  #
+  #  Instance variables
+  #
+  attr_reader :volume
+
+  #
+  #  Constructor.  Save the name of the significant volume-group
+  # away.
+  #
+  def initialize( volume = "here" )
+    @volume = volume
+  end
+
+
+  #
+  # return an array of all volumes which are in the significant
+  # volume group.
+  #
+  def find
+    results = Hash.new
+
+    #
+    #  Run lvs.
+    #
+    `lvs`.split("\n").each do |line|
+
+      #
+      # Get the name of the volume & volume group.
+      #
+      name,val = line.split( " " )
+
+      #
+      #  If this is running on the significant volume *AND* it
+      # doesn't have an "_" in the name - which makes it a meta-store
+      # add the name to our list.
+      #
+      if ( ( val == @volume ) && ( name !~ /_/ ) )
+        results[name]=val
+      end
+    end
+    results
+  end
+
+end
+
+
+
+#
+#  A helper library for mounting, unmounting, and generally manipulating
+# a single disk-image.
+#
+#  The only complexity here is the mounting option as the volumes we're
+# dealing with are partitioned block-devices and we need to mount them.
+#
+#
+class LocalDisk
+
+  #
+  #  Instance variable(s)
+  #
+  attr_reader :name
+
+
+  #
+  #  Constructor
+  #
+  def initialize( name  )
+    @name=name
+  end
+
+
+  #
+  # Given the LVM volume "here" with the guest "foo" create
+  # "foo_snap"
+  #
+  def snapshot( lvm )
+    Log.debug "snapshot:start"
+    ret = Kernel.system( "lvcreate -n #{@name}_snap -s -L 5g /dev/#{lvm}/#{@name}")
+    Log.debug "snapshot:end"
+    ret
+  end
+
+
+  #
+  # Given our snapshot, /dev/here/$name_snap, we need to iteratively
+  # walk over it and try to mount it with ever-increasing offsets.
+  #
+  # If we find it mounted then we're done.
+  #
+  def mount
+
+    Log.debug "mount:start"
+
+    #
+    #  Starting offset we look for the partition at.
+    #
+    offset=0
+
+    #
+    #  Until we've read "too much".
+    #
+    while( offset < ( 64 * 1024 ) )
+
+
+      #
+      #  Attempt to setup a loop device at the given offset.
+      #
+      Kernel.system( "losetup -o#{512*offset} /dev/loop0 /dev/here/#{@name}_snap" )
+
+      #
+      #  Then mount it.
+      #
+      Kernel.system( "mount /dev/loop0 /mnt 2>/dev/null" )
+
+      #
+      #  If that succeeded we're golden.
+      #
+      if ( mounted? )
+
+        #
+        #  We can skip this if we find that we've mounted the first
+        # partition by mistake.
+        #
+        if ( !File.exists?( "/mnt/grub" ) &&  !File.exists?( "/mnt/Boot" ) )
+             #
+             #
+             # Write the index we used out to disk - such that next time we
+             # can skip this unpleasantness.
+             #
+             file= File.open( "/var/tmp/#{@name}.off", "w" )
+             begin
+               file.print( 512 * offset )
+             ensure
+               file.close()
+             end
+             Log.debug "mount:end"
+             return true
+        end
+      end
+
+      #
+      #  Tidy up the abortive attempt.
+      #
+      #  TODO: Is this necessary?
+      #
+      Kernel.system( "losetup -d /dev/loop0 2>/dev/null" )
+      offset += 1
+    end
+    Log.debug "mount:end"
+    nil
+  end
+
+
+  #
+  #  If we can mount a disk via a cached offset then attempt to do so.
+  #
+  def mount_cached
+
+    Log.debug "mount_cached:start"
+
+    #
+    #  If we have a cached offset
+    #
+    if ( File.exists?( "/var/tmp/#{@name}.off" ) )
+
+      #
+      #  Read it
+      #
+      offset=0
+      File.open( "/var/tmp/#{@name}.off", "r" ) do |fh|
+        offset=fh.read(9999).strip
+      end
+
+
+      #
+      #  If it was a number
+      #
+      if ( !offset.nil?  && offset.to_i > 0 )
+
+        Log.debug "  mounting via cached offset [#{offset}]"
+
+        #
+        #  Mount.
+        #
+        Kernel.system( "losetup -o#{offset} /dev/loop0 /dev/here/#{@name}_snap" )
+        Kernel.system( "mount /dev/loop0 /mnt 2>/dev/null" )
+
+        if ( mounted? )
+          Log.debug "mount_cached:end [cache success]"
+          return true
+        else
+
+          #
+          #  The mounting failed, so free up the device and
+          # remove the cached file.
+          #
+          Kernel.system( "losetup -d /dev/loop0 2>/dev/null" )
+          File.unlink( "/var/tmp/#{@name}.off" )
+        end
+      else
+
+        #
+        #  We either failed to read the file, or found it had non
+        # numeric contents.
+        #
+        #  Remove it for the future.
+        #
+        File.unlink( "/var/tmp/#{@name}.off" )
+
+      end
+    end
+
+    Log.debug "mount_cached:end [cache fail]"
+
+    nil
+  end
+
+
+
+  #
+  # Is the disk mounted?
+  #
+  def mounted?
+    ret = nil
+
+    File.open("/proc/mounts").each do |line|
+      if (  line =~ / \/mnt /i )
+        ret=true
+      end
+    end
+
+    ret
+  end
+
+
+  #
+  # Here we need to know where we're rsycing to.
+  #
+  # We hard-code this via the file : /etc/backup.location
+  # which we read in this method.
+  #
+  def rsync
+    Log.debug "rsync:start"
+
+    #
+    #  Find the host to write to.
+    #
+    dest=""
+
+    if (File.exists?("/etc/backup.location" ) )
+      File.open( "/etc/backup.location", "r" ) do |fh|
+        dest=fh.read(9999).strip
+      end
+    else
+      Log.fatal "There is no /etc/backup.location file present"
+      return 0
+    end
+
+    #
+    #  Now rsync
+    #
+    cmd="rsync --numeric-ids --delete --delete-after -qaHPS /mnt/ #{dest}::backups/#{@name}.today"
+    ret=Kernel.system( cmd )
+
+    #
+    #  Additionally sync to the Thermeon-controlled host.
+    #
+    #    cmd="rsync --numeric-ids --delete --delete-after -qaHPS /mnt/ 46.43.48.143::backups/#{@name}.today"
+    # ret=Kernel.system( cmd )
+
+
+    #
+    #  Ended
+    #
+    Log.debug "rsync:end"
+    ret
+  end
+
+  #
+  # Unmount our snapshot image.
+  #
+  def unmount
+    Log.debug "unmount:start" 
+
+    #
+    #  Only unmount if mounted.
+    #
+    if  ( mounted? )
+
+      #
+      #  Unmount
+      #
+      System.run_or_abort( "umount /mnt" )
+
+      #
+      #  Free the loop device
+      #
+      System.run_silently( "losetup -d /dev/loop0" )
+    end
+
+    Log.debug "unmount:end" 
+  end
+
+
+
+  #
+  # Remove our LVM snapshot.
+  #
+  def destroy( lvm )
+
+    Log.debug "destroy:start"
+
+    ret = Kernel.system( "lvremove --quiet --force /dev/#{lvm}/#{@name}_snap" )
+
+    Log.debug "destroy:end" 
+    ret
+  end
+
+end
+
+
+
+#
+#  A utility class to see if a guest is running, and sync it if so.
+#
+class KVMGuest
+
+  #
+  #  Instance variable(s)
+  #
+  attr_reader :machine
+
+
+  #
+  #  Constructor
+  #
+  def initialize( machine )
+    @machine = machine
+  end
+
+
+  #
+  #  Is the guest running?
+  #
+  def running?
+
+    return false unless( File.exists?( "/machines/.#{@machine}.pid" ) )
+    return false unless( File.exists?( "/machines/.#{@machine}.monitor" ) )
+
+    pid=nil
+    File.open( "/machines/.#{@machine}.pid", "r" ) do |fh|
+      pid=fh.read(9999).strip
+    end
+
+    return false if ( pid.nil? )
+
+    return( Process.running?( pid ) )
+
+  end
+
+
+  #
+  #  Attempt to sync
+  #
+  def sync
+
+    if running?
+      Log.debug "Machine running - syncing disk(s)"
+
+      # commit
+      monitor_send( "/machines/.#{@machine}.monitor" , "commit all" )
+
+      # sync
+      monitor_send( "/machines/.#{@machine}.monitor" , "sendkey alt-sysrq-s" )
+
+      # (re-)commit
+      monitor_send( "/machines/.#{@machine}.monitor" , "commit all" )
+
+      Log.debug "Disk sync finished"
+    end
+  end
+
+
+  #
+  # Send a command to the monitor socket.
+  #
+  def monitor_send( socket, command )
+
+    #
+    # Test the socket exists
+    #
+    if ( File.exists?( socket ) )
+
+      #
+      #  If it does send the command
+      #
+      System.run_silently( "/bin/echo '#{command}\n' | socat - UNIX-CONNECT:#{socket}" )
+    end
+  end
+
+end
+
+
+
+
+#
+#  Entry Point to code
+##
+###
+#######
+
+if __FILE__ == $0
+
+
+  #
+  #  Set by the command line parameters
+  #
+  @HELP    = false
+  @TEST    = false
+
+  #
+  #  Avoid warnings about open-file-descriptors from LVM.
+  #
+  #  See Debian bug #466138
+  #
+  #
+  ENV['LVM_SUPPRESS_FD_WARNINGS']="1"
+
+  #
+  #  Ensure we have a sane path, such that the script works via
+  # cron.
+  #
+  ENV['PATH']="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+  #
+  #  Naive Argument parsing:
+  #
+  #    --verbose     -> globally toggle the puts
+  #    --help        -> Show help
+  #    --test        -> Show machines that would be archived.
+  #
+  #
+  #
+  #  See if we're doing stress-testing.
+  #
+  opts = GetoptLong.new(
+                        [ "--verbose",    "-v", GetoptLong::NO_ARGUMENT ],
+                        [ "--help",       "-h", GetoptLong::NO_ARGUMENT ],
+                        [ "--test",       "-t", GetoptLong::NO_ARGUMENT ]
+                        )
+
+  begin
+    opts.each do |opt, arg|
+      case opt
+      when /^--(verbose|debug)/:
+          Log.level = 0
+      when "--help":
+          @HELP=true
+      when "--test":
+          @TEST=true
+      end
+    end
+  rescue Exception => ex
+    Log.error ex
+    exit 1
+  end
+
+  #
+  #  Hack for --help
+  #
+  if ( @HELP )
+    File.open( $0 ).each do |line|
+      exit if ( line =~ /EOH/ )
+      next if ( line =~ /ruby/ )
+      if ( line =~ /^#(.*)$/ )
+        puts $1.dup
+      end
+    end
+    exit
+  end
+
+  Log.info "Started"
+
+  #
+  #  At this point we've parsed our arguments and we're doing
+  # a real backup.
+  #
+  #  So we need to be root.
+  #
+  if ( Process.euid != 0 )
+    puts "You must be root to run this script."
+    exit 1
+  end
+
+
+  #
+  #  Find each guest, and process each one.
+  #
+  guests = AllGuests.new()
+
+  guests.find.each do |name,lvm|
+
+    #
+    #  Show the name of the guest - and skip if htat's
+    # all we were going to do.
+    #
+    next if ( name.match( /^(sdh|zimbra|cityhr|wsa)$/ ) )
+
+    Log.info "Backing up guest: #{name}  LVM volume: #{lvm}"
+    next if @TEST
+
+
+    Log.info "Guest #{name} started processing"
+
+    #
+    #  Get access to the guest's monitor.
+    #
+    kvm = KVMGuest.new(name)
+
+    if ( kvm.running? )
+
+      begin
+
+
+        Log.debug "Guest is running"
+
+        #
+        #  Get access to the disk
+        #
+        local = LocalDisk.new( name )
+
+        #
+        #  Sync the running guest
+        #
+        kvm.sync()
+        kvm.sync()
+
+        #
+        #  Now snapshot the disk image
+        #
+        local.snapshot( lvm ) or raise "Failed to create snapshot for guest #{name}"
+
+        #
+        #  Attempt to mount via the cached block-device off-set
+        #
+        if ( !local.mount_cached )
+
+          #
+          #  If that fails then we'll do it the manual way.
+          #
+          local.mount or raise "Failed to mount snapshot for guest #{name}"
+        end
+
+        #
+        #  Now we'll backup, via rsync.
+        #
+        local.rsync or raise "Failed to rsync mounted snapshot for guest #{name}"
+
+      rescue Exception => ex
+
+        Log.error "There was a failure processing this guest."
+        Log.error ex
+	
+      ensure
+
+        #
+        #  Unmount the snapshot
+        #
+        local.unmount()
+
+        #
+        #  Remove the snapshot
+        #
+        local.destroy( lvm )
+
+      Log.info "Backup complete"
+
+      end
+
+
+    else
+      #
+      #
+      #
+      Log.info "Guest not running - so skipping backup"
+
+    end
+
+    Log.info "Guest #{name} finished processing"
+
+  end
+
+  Log.info "Finished"
+end
