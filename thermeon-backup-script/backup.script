@@ -210,7 +210,7 @@ class LocalDisk
     #
     #  Until we've read "too much".
     #
-    while( offset < ( 64 * 1024 ) )
+    while( offset < 200000000  )
 
 
       #
@@ -247,6 +247,11 @@ class LocalDisk
              Log.debug "mount:end"
              return true
         end
+
+        #
+        #  Unmount that first partition.
+        #
+        Kernel.system( "umount /mnt >/dev/null 2>/dev/null" )
       end
 
       #
