@@ -621,7 +621,7 @@ if __FILE__ == $0
     #  Show the name of the guest - and skip if htat's
     # all we were going to do.
     #
-    next if ( name.match( /^(sdh|zimbra|cityhr|wsa)$/ ) )
+    next if ( name.match( /^(testdeb|window|sdh|zimbra|cityhr|wsa)$/ ) )
 
     Log.info "Backing up guest: #{name}  LVM volume: #{lvm}"
     next if @TEST
