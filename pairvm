@@ -685,6 +685,8 @@ module PairVM
         #error("Won't use >50% of the memory on the other host  (must be < #{mem_left}M)") if
         #  !is_here && Machine.total_memory_there + mem > Global.max_memory/2
 
+        drbd_port = nil if drbd_port == "auto"
+
         drbd_port ||= Machine.allocate_drbd_port
         vnc_screen ||= Machine.allocate_vnc_screen
         ip ||= Machine.allocate_ip
