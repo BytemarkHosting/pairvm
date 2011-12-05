@@ -638,6 +638,7 @@ if __FILE__ == $0
 
       begin
 
+        Log.info "Guest #{name} started processing: #{Time.now}"
 
         Log.debug "Guest is running"
 
@@ -677,7 +678,7 @@ if __FILE__ == $0
 
         Log.error "There was a failure processing this guest."
         Log.error ex
-	
+
       ensure
 
         #
@@ -703,7 +704,7 @@ if __FILE__ == $0
 
     end
 
-    Log.info "Guest #{name} finished processing"
+    Log.info "Guest #{name} finished processing: #{Time.now}"
 
   end
 
