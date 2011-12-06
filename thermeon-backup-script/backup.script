@@ -650,8 +650,8 @@ if __FILE__ == $0
         #
         #  Sync the running guest
         #
-        kvm.sync()
-        kvm.sync()
+        #kvm.sync()
+        #kvm.sync()
 
         #
         #  Now snapshot the disk image
