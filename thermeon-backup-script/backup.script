@@ -87,8 +87,7 @@ class System
 
   def System.run_or_abort( cmd )
     Kernel.system( cmd ) && return
-
-    Log.error "Command failde: #{cmd}"
+    Log.error "Command failed: #{cmd}"
   end
 
   def System.run_silently( cmd )
@@ -392,11 +391,12 @@ class LocalDisk
     ret
   end
 
+
   #
   # Unmount our snapshot image.
   #
   def unmount
-    Log.debug "unmount:start" 
+    Log.debug "unmount:start"
 
     #
     #  Only unmount if mounted.
@@ -414,7 +414,7 @@ class LocalDisk
       System.run_silently( "losetup -d /dev/loop0" )
     end
 
-    Log.debug "unmount:end" 
+    Log.debug "unmount:end"
   end
 
 
@@ -428,7 +428,7 @@ class LocalDisk
 
     ret = Kernel.system( "lvremove --quiet --force /dev/#{lvm}/#{@name}_snap" )
 
-    Log.debug "destroy:end" 
+    Log.debug "destroy:end"
     ret
   end
 
@@ -618,11 +618,10 @@ if __FILE__ == $0
   guests.find.each do |name,lvm|
 
     #
-    #  Show the name of the guest - and skip if htat's
+    #  Show the name of the guest - and skip if that's
     # all we were going to do.
     #
     next if ( name.match( /^(testdeb|window|sdh|zimbra|cityhr|wsa)$/ ) )
-
     Log.info "Backing up guest: #{name}  LVM volume: #{lvm}"
     next if @TEST
 
@@ -691,7 +690,7 @@ if __FILE__ == $0
         #
         local.destroy( lvm )
 
-      Log.info "Backup complete"
+        Log.info "Backup complete"
 
       end
 
