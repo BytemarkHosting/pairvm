@@ -109,16 +109,11 @@ end
 class AllGuests
 
   #
-  #  Instance variables
+  #  Constructor.
   #
-  attr_reader :volume
-
+  #  NOP.
   #
-  #  Constructor.  Save the name of the significant volume-group
-  # away.
-  #
-  def initialize( volume = "here" )
-    @volume = volume
+  def initialize(  )
   end
 
 
@@ -140,11 +135,10 @@ class AllGuests
       name,val = line.split( " " )
 
       #
-      #  If this is running on the significant volume *AND* it
-      # doesn't have an "_" in the name - which makes it a meta-store
-      # add the name to our list.
+      #  If this doesn't have an "_" in the name - which makes it a
+      # meta-store add the name to our list.
       #
-      if ( ( val == @volume ) && ( name !~ /_/ ) )
+      if ( name !~ /_/ )
         results[name]=val
       end
     end
@@ -611,35 +605,47 @@ if __FILE__ == $0
 
 
   #
-  #  Find each guest, and process each one.
+  #  Find each guests.
   #
   guests = AllGuests.new()
 
+
+  #
+  #  For each guest we've discovered.
+  #
   guests.find.each do |name,lvm|
 
     #
-    #  Show the name of the guest - and skip if that's
-    # all we were going to do.
+    #  Skip if that's all we were going to do.
     #
     next if ( name.match( /^(testdeb|window|sdh|zimbra|cityhr|wsa)$/ ) )
-    Log.info "Backing up guest: #{name}  LVM volume: #{lvm}"
+
+
+    #
+    #  Test to see if the guest is running.
+    #
+    kvm = KVMGuest.new(name)
+    if ( kvm.running? )
+      Log.info( "Guest #{name} is running - we'll back it up." )
+    else
+      Log.info( "Guest #{name} is NOT running - we'll ignore it." )
+    end
+
+    #
+    #  If we're just testing then we'll stop here.
+    #
     next if @TEST
 
 
-    Log.info "Guest #{name} started processing"
 
     #
-    #  Get access to the guest's monitor.
+    #  If it is still running we're golden
     #
-    kvm = KVMGuest.new(name)
-
     if ( kvm.running? )
 
       begin
 
         Log.info "Guest #{name} started processing: #{Time.now}"
-
-        Log.debug "Guest is running"
 
         #
         #  Get access to the disk
@@ -699,7 +705,7 @@ if __FILE__ == $0
       #
       #
       #
-      Log.info "Guest not running - so skipping backup"
+      Log.info "Guest not running - skipping backup"
 
     end
 
