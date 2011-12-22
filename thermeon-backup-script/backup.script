@@ -191,7 +191,7 @@ class LocalDisk
   #
   # If we find it mounted then we're done.
   #
-  def mount
+  def mount( lvm )
 
     Log.debug "mount:start"
 
@@ -209,7 +209,7 @@ class LocalDisk
       #
       #  Attempt to setup a loop device at the given offset.
       #
-      Kernel.system( "losetup -o#{512*offset} /dev/loop0 /dev/here/#{@name}_snap" )
+      Kernel.system( "losetup -o#{512*offset} /dev/loop0 /dev/#{lvm}/#{@name}_snap" )
 
       #
       #  Then mount it.
@@ -263,7 +263,7 @@ class LocalDisk
   #
   #  If we can mount a disk via a cached offset then attempt to do so.
   #
-  def mount_cached
+  def mount_cached( lvm )
 
     Log.debug "mount_cached:start"
 
@@ -291,7 +291,7 @@ class LocalDisk
         #
         #  Mount.
         #
-        Kernel.system( "losetup -o#{offset} /dev/loop0 /dev/here/#{@name}_snap" )
+        Kernel.system( "losetup -o#{offset} /dev/loop0 /dev/#{lvm}/#{@name}_snap" )
         Kernel.system( "mount /dev/loop0 /mnt 2>/dev/null" )
 
         if ( mounted? )
@@ -666,12 +666,12 @@ if __FILE__ == $0
         #
         #  Attempt to mount via the cached block-device off-set
         #
-        if ( !local.mount_cached )
+        if ( !local.mount_cached( lvm ) )
 
           #
           #  If that fails then we'll do it the manual way.
           #
-          local.mount or raise "Failed to mount snapshot for guest #{name}"
+          local.mount( lvm ) or raise "Failed to mount snapshot for guest #{name}"
         end
 
         #
