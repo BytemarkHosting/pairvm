@@ -15,6 +15,9 @@ require 'yaml'
 require 'tempfile'
 require 'timeout'
 
+require 'rubygems'
+require 'bytemark_installer/pairvm'
+
 class IPAddr
   class << self
     # Returns the current list of IPs that this Linux machine is claiming
@@ -1324,6 +1327,37 @@ DONE
 
       end
 
+      def help_image; [
+        "Install an operating system image into a stopped VM",
+        ["name", "dist", "hostname", "password"],
+        ["firstboot-script"],
+        {
+          "name" => "The name of the VM",
+          "dist" => "The distribution to install",
+          "hostname" => "The fully qualified hostname of the VM",
+          "password" => "The root password for the VM",
+          "firstboot-script" => "A script to run in the VM on first boot"
+        }
+      ]; end
+
+      def cmd_image(name, dist, hostname, password, firstboot_script = nil)
+        machine = Machine.new(name)
+        kvm = machine.kvm
+        error("Cannot image running VM") if kvm.running?
+        options = {
+            :dist => dist,
+            :password => password,
+            :hostname => hostname,
+            :ip_address => machine.ip.to_s,
+            :ip_gateway => (Global.ips['public'] + 1).to_s,
+            :ip_netmask => Global.ips['public'].inspect[/\/([0-9.]+)>/, 1]
+                                              # ^ yuck
+        }
+        imager = PairvmImager.new(machine.drbd.node, options)
+        error("Imaging failed") unless imager.install
+        puts "#{dist} installed on #{name}."
+      end
+
       def check_system
         error("kvm isn't installed") unless
           File.executable?("/usr/bin/kvm")
@@ -1333,6 +1367,9 @@ DONE
 
         error("socat isn't installed") unless
           File.executable?("/usr/bin/socat")
+
+        error("bytemark-imager isn't installed") unless
+          File.executable?("/usr/bin/bytemark-installer")
 
         error("You must configure a public bridge called br0 for public IP addresses") unless
           File.directory?("/sys/class/net/br0")
