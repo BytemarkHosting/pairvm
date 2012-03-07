@@ -15,8 +15,13 @@ require 'yaml'
 require 'tempfile'
 require 'timeout'
 
-require 'rubygems'
-require 'bytemark_installer/pairvm'
+begin
+  require 'rubygems'
+  require 'bytemark_installer/pairvm'
+  BYTEMARK_IMAGER = true
+rescue
+  BYTEMARK_IMAGER = false
+end
 
 class IPAddr
   class << self
@@ -1341,6 +1346,8 @@ DONE
       ]; end
 
       def cmd_image(name, dist, hostname, password, firstboot_script = nil)
+        check_system
+
         machine = Machine.new(name)
         kvm = machine.kvm
         error("Cannot image running VM") if kvm.running?
@@ -1368,8 +1375,7 @@ DONE
         error("socat isn't installed") unless
           File.executable?("/usr/bin/socat")
 
-        error("bytemark-imager isn't installed") unless
-          File.executable?("/usr/bin/bytemark-installer")
+        error("bytemark-imager isn't installed") unless BYTEMARK_IMAGER
 
         error("You must configure a public bridge called br0 for public IP addresses") unless
           File.directory?("/sys/class/net/br0")
