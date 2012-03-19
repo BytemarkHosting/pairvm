@@ -19,7 +19,7 @@ begin
   require 'rubygems'
   require 'bytemark_installer/pairvm'
   BYTEMARK_IMAGER = true
-rescue
+rescue LoadError
   BYTEMARK_IMAGER = false
 end
 
@@ -1349,17 +1349,57 @@ DONE
         check_system
 
         machine = Machine.new(name)
+
+        error("#{name} is not meant to run here, you must image "+
+          "it from there") unless machine.at_home?
+        
         kvm = machine.kvm
         error("Cannot image running VM") if kvm.running?
+
+        
+        machine.drbd.setup("down")
+        machine.drbd_attach!# unless machine.drbd.configured?
+        machine.drbd_connect!
+
+        # If we don't wait for DRBD to connect before we switch to primary,
+        # we risk a split brain.
+        #
+        if !machine.drbd.wait_for_states("Connected", "SyncSource", "SyncTarget")
+          if machine.drbd.cs == "StandAlone"
+            error "DRBD device #{machine.drbd.node} is StandAlone which "+
+              "suggests a split brain.  Run 'split_brain_victim' on one peer "+
+              "or the other to erase its data and resolve the situation."
+          else
+            error "DRBD device #{machine.drbd.node} is not connected "
+          end
+        end
+
+        # Push other host into secondary state
+        ssh_command  = ["ssh", Global.ips['there'], $0]
+        ssh_command += ["-v"] if @verbose
+        ssh_command += ["drbd_connect", machine.name]
+        system(*ssh_command)
+
+        # Now this should work without error
+        #
+        machine.drbd.setup("primary")
+        
         options = {
             :dist => dist,
             :password => password,
             :hostname => hostname,
             :ip_address => machine.ip.to_s,
-            :ip_gateway => (Global.ips['public'] + 1).to_s,
+            :ip_gateway => Global.ips['public'].succ.to_s,
             :ip_netmask => Global.ips['public'].inspect[/\/([0-9.]+)>/, 1]
                                               # ^ yuck
         }
+        if firstboot_script
+          options[:firstboot_script] = begin
+            File.read(firstboot_script)
+          rescue
+            error("Could not read firstboot_script")
+          end
+        end
         imager = PairvmImager.new(machine.drbd.node, options)
         error("Imaging failed") unless imager.install
         puts "#{dist} installed on #{name}."
@@ -1374,6 +1414,9 @@ DONE
 
         error("socat isn't installed") unless
           File.executable?("/usr/bin/socat")
+
+        error("kpartx isn't installed") unless
+          File.executable?("/sbin/kpartx")
 
         error("bytemark-imager isn't installed") unless BYTEMARK_IMAGER
 
