@@ -87,8 +87,7 @@ class System
 
   def System.run_or_abort( cmd )
     Kernel.system( cmd ) && return
-
-    Log.error "Command failde: #{cmd}"
+    Log.error "Command failed: #{cmd}"
   end
 
   def System.run_silently( cmd )
@@ -110,16 +109,11 @@ end
 class AllGuests
 
   #
-  #  Instance variables
+  #  Constructor.
   #
-  attr_reader :volume
-
+  #  NOP.
   #
-  #  Constructor.  Save the name of the significant volume-group
-  # away.
-  #
-  def initialize( volume = "here" )
-    @volume = volume
+  def initialize(  )
   end
 
 
@@ -141,11 +135,10 @@ class AllGuests
       name,val = line.split( " " )
 
       #
-      #  If this is running on the significant volume *AND* it
-      # doesn't have an "_" in the name - which makes it a meta-store
-      # add the name to our list.
+      #  If this doesn't have an "_" in the name - which makes it a
+      # meta-store add the name to our list.
       #
-      if ( ( val == @volume ) && ( name !~ /_/ ) )
+      if ( name !~ /_/ )
         results[name]=val
       end
     end
@@ -198,7 +191,7 @@ class LocalDisk
   #
   # If we find it mounted then we're done.
   #
-  def mount
+  def mount( lvm )
 
     Log.debug "mount:start"
 
@@ -216,7 +209,7 @@ class LocalDisk
       #
       #  Attempt to setup a loop device at the given offset.
       #
-      Kernel.system( "losetup -o#{512*offset} /dev/loop0 /dev/here/#{@name}_snap" )
+      Kernel.system( "losetup -o#{512*offset} /dev/loop0 /dev/#{lvm}/#{@name}_snap" )
 
       #
       #  Then mount it.
@@ -270,7 +263,7 @@ class LocalDisk
   #
   #  If we can mount a disk via a cached offset then attempt to do so.
   #
-  def mount_cached
+  def mount_cached( lvm )
 
     Log.debug "mount_cached:start"
 
@@ -298,7 +291,7 @@ class LocalDisk
         #
         #  Mount.
         #
-        Kernel.system( "losetup -o#{offset} /dev/loop0 /dev/here/#{@name}_snap" )
+        Kernel.system( "losetup -o#{offset} /dev/loop0 /dev/#{lvm}/#{@name}_snap" )
         Kernel.system( "mount /dev/loop0 /mnt 2>/dev/null" )
 
         if ( mounted? )
@@ -392,11 +385,12 @@ class LocalDisk
     ret
   end
 
+
   #
   # Unmount our snapshot image.
   #
   def unmount
-    Log.debug "unmount:start" 
+    Log.debug "unmount:start"
 
     #
     #  Only unmount if mounted.
@@ -414,7 +408,7 @@ class LocalDisk
       System.run_silently( "losetup -d /dev/loop0" )
     end
 
-    Log.debug "unmount:end" 
+    Log.debug "unmount:end"
   end
 
 
@@ -428,7 +422,7 @@ class LocalDisk
 
     ret = Kernel.system( "lvremove --quiet --force /dev/#{lvm}/#{@name}_snap" )
 
-    Log.debug "destroy:end" 
+    Log.debug "destroy:end"
     ret
   end
 
@@ -611,36 +605,47 @@ if __FILE__ == $0
 
 
   #
-  #  Find each guest, and process each one.
+  #  Find each guests.
   #
   guests = AllGuests.new()
 
+
+  #
+  #  For each guest we've discovered.
+  #
   guests.find.each do |name,lvm|
 
     #
-    #  Show the name of the guest - and skip if htat's
-    # all we were going to do.
+    #  Skip if that's all we were going to do.
     #
     next if ( name.match( /^(testdeb|window|sdh|zimbra|cityhr|wsa)$/ ) )
 
-    Log.info "Backing up guest: #{name}  LVM volume: #{lvm}"
+
+    #
+    #  Test to see if the guest is running.
+    #
+    kvm = KVMGuest.new(name)
+    if ( kvm.running? )
+      Log.info( "Guest #{name} is running - we'll back it up." )
+    else
+      Log.info( "Guest #{name} is NOT running - we'll ignore it." )
+    end
+
+    #
+    #  If we're just testing then we'll stop here.
+    #
     next if @TEST
 
 
-    Log.info "Guest #{name} started processing"
 
     #
-    #  Get access to the guest's monitor.
+    #  If it is still running we're golden
     #
-    kvm = KVMGuest.new(name)
-
     if ( kvm.running? )
 
       begin
 
         Log.info "Guest #{name} started processing: #{Time.now}"
-
-        Log.debug "Guest is running"
 
         #
         #  Get access to the disk
@@ -661,12 +666,12 @@ if __FILE__ == $0
         #
         #  Attempt to mount via the cached block-device off-set
         #
-        if ( !local.mount_cached )
+        if ( !local.mount_cached( lvm ) )
 
           #
           #  If that fails then we'll do it the manual way.
           #
-          local.mount or raise "Failed to mount snapshot for guest #{name}"
+          local.mount( lvm ) or raise "Failed to mount snapshot for guest #{name}"
         end
 
         #
@@ -691,7 +696,7 @@ if __FILE__ == $0
         #
         local.destroy( lvm )
 
-      Log.info "Backup complete"
+        Log.info "Backup complete"
 
       end
 
@@ -700,7 +705,7 @@ if __FILE__ == $0
       #
       #
       #
-      Log.info "Guest not running - so skipping backup"
+      Log.info "Guest not running - skipping backup"
 
     end
 
