@@ -139,7 +139,6 @@ module PairVM
       end
     end
 
-    protected
     # The PID for the currently running KVM.  Returns nil if it's not running,
     # and cleans up any stale PID in the process.
     #
@@ -155,6 +154,8 @@ module PairVM
       File.unlink(pidfile)
       nil
     end
+
+    protected
 
     def expect(socket, string)
       buffer = ""
@@ -1212,6 +1213,50 @@ module PairVM
         print "\nTotal RAM here: #{Machine.total_memory_here}M "+
           "there: #{Machine.total_memory_there}M "+
           "max: #{Global.max_memory}M\n"
+      end
+      
+      def help_graphite_stats; [
+        "Generate statistics for graphite",
+        ["prefix"],
+        ["sendto"],
+        { "prefix" => "The prefix to use for statistics",
+          "host" => "The hostname or IP address to which to send stats"
+         }
+      ]; end
+      
+      def cmd_graphite_stats(prefix, sendto=nil)
+        
+        out = if sendto
+          ip, port = sendto.split(":")
+          port = port.to_i
+          TCPSocket.new(ip, port)
+        else
+          STDOUT
+        end
+        
+        now = Time.now.to_i
+        machines = Machine.all.select { |m| m.kvm.running? }
+        machines.each do |m|
+          m_prefix = "#{prefix}.pairvm.#{m.name}"
+        
+          %w( ns nr dw dr al bm lo pe ua ap ep oos ).each do |stat|
+            out.print m_prefix+".drbd.#{stat} #{m.drbd.__send__(stat.to_sym)} #{now}\n"
+          end
+          
+          pid_stats = File.open("/proc/#{m.kvm.pid}/stat").read(2000).split(" ")
+          out.print m_prefix+".utime #{pid_stats[13]} #{now}\n"
+          out.print m_prefix+".stime #{pid_stats[13]} #{now}\n"
+        end
+        
+        h_prefix = "#{prefix}.#{`hostname -s`.chomp}"
+        
+        load1, load5, load15, rest = File.read("/proc/loadavg").
+          split(" ", 4)[0..2]
+        out.print "#{h_prefix}.load1 #{load1} #{now}\n"
+        out.print "#{h_prefix}.load5 #{load5} #{now}\n"
+        out.print "#{h_prefix}.load15 #{load15} #{now}\n"
+        
+        out.close
       end
 
       def help_print_ssh_forwards; [
