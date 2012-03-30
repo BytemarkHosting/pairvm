@@ -531,7 +531,7 @@ module PairVM
       [
       "#{Global.ips['here_drbd']}:#{drbd_port}",
       "#{Global.ips['there_drbd']}:#{drbd_port}",
-        "C",
+        "B",
         "--after-sb-0pri", "discard-zero-changes",
         "--after-sb-1pri", "consensus",
         "--after-sb-2pri", "disconnect"
@@ -872,7 +872,7 @@ module PairVM
         machine = Machine.new(name)
         machine.drbd.setup(*options)
       end
-
+      
       def cmd_read(name, option)
         check_system
         print Machine.new(name).send(option.to_sym).to_s + "\n"
@@ -1259,6 +1259,54 @@ module PairVM
         out.close
       end
 
+      def help_backup_snapshot; [
+        "Snapshot & copy the given VM(s) to the given (SSH) destination.",
+        ["name", "destination", "speed"],
+        ["--home"],
+        {"name" => "name of VM to back up (or 'all')",
+         "destination" => "directory or filename destination as in 'user@hostname:/path' with _NAME_ replaced by VM name if present",
+         "speed" => "Speed to limit copy in KB/s",
+         "--home" => "force backup of machine(s) at home (performance penalty)"
+        }
+      ]; end
+      
+      def cmd_backup_snapshot(name, destination, speed, home_flag=false)
+        home_flag = home_flag==true || home_flag=='--home'
+        
+        machines = Machine.all.
+          select { |m| m.away? || (m.at_home? && home_flag) }.
+          select { |m| name == 'all' || m.name == name }
+        
+        raise "No #{home_flag ? 'home' : 'away'} machine found '#{name}'" if
+          machines.empty?
+        
+        machines.each do |m|
+          snapshot_path = m.drbd_backing_device + "_" + Time.now.to_i.to_s
+          snapshot_name = snapshot_path.split("/")[-1]
+          destination_host, destination_path = destination.split(":", 2)
+          
+          system "/sbin/lvcreate --size 2G --snapshot --name #{snapshot_name} "+
+            "#{m.drbd_backing_device}"
+          begin
+            # https://github.com/mpalmer/lvmsync looks cute but complicates
+            # things at the destination end - files will do for now.
+            #
+            # Also - gzip only uses one core, probably safe to really speed
+            #
+            #
+            this_destination_path = destination_path.gsub("_NAME", m.name)
+            print "Copying #{m.name}: "
+            system "cpipe -s #{speed} < #{snapshot_path} | gzip -1 | "+
+              "ssh #{destination_host} cat \\> "+
+              "#{this_destination_path}.#{snapshot_name} \\&\\& "+
+              "mv #{this_destination_path}.#{snapshot_name} #{this_destination_path}"
+            print "OK\n"
+          ensure
+            system "/sbin/lvremove --force #{snapshot_path}"
+          end
+        end
+      end
+      
       def help_print_ssh_forwards; [
         "Print a list of SSH port forward specifications to access the consoles of any VM on this peer",
         ["offset"],
@@ -1381,6 +1429,9 @@ DONE
         error("socat isn't installed") unless
           File.executable?("/usr/bin/socat")
 
+        error("cpipe isn't installed") unless
+          File.executable?("/usr/bin/cpipe")
+
         error("You must configure a public bridge called br0 for public IP addresses") unless
           File.directory?("/sys/class/net/br0")
 
@@ -1411,7 +1462,7 @@ end
 ENV['LVM_SUPPRESS_FD_WARNINGS'] = "1"
 
 me = File.expand_path($0)
-if /pairvm_([a-z_]+)$/.match(me)
+if /backup_snapshot$|pairvm_([a-z_]+)$/.match(me)
   PairVM::Commands.parse($1, *ARGV)
 elsif File.exists?("/machines/_global")
   File.open("/machines/_global") do |lockfile|
