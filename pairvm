@@ -1295,12 +1295,19 @@ module PairVM
             #
             #
             this_destination_path = destination_path.gsub("_NAME", m.name)
+            temp_path = this_destination_path + ".tmp." + snapshot_name
             print "Copying #{m.name}: "
-            system "cpipe -s #{speed} < #{snapshot_path} | gzip -1 | "+
-              "ssh #{destination_host} cat \\> "+
-              "#{this_destination_path}.#{snapshot_name} \\&\\& "+
-              "mv #{this_destination_path}.#{snapshot_name} #{this_destination_path}"
-            print "OK\n"
+            started = Time.now
+            system "cpipe -s #{speed} < #{snapshot_path} | "+
+              "ssh -C #{destination_host} pbzip2 \\> "+
+              "#{temp_path} \\&\\& "+
+              "mv #{temp_path} #{this_destination_path}"
+              
+            size = File.open(snapshot_path, "r") do |fh| 
+              fh.seek(0,IO::SEEK_END); fh.tell >> 20
+            end
+            duration = (Time.now - started).to_i
+            print "#{size}MB copied in #{duration / 60}m#{duration % 60}s\n"
           ensure
             system "/sbin/lvremove --force #{snapshot_path}"
           end
@@ -1462,7 +1469,7 @@ end
 ENV['LVM_SUPPRESS_FD_WARNINGS'] = "1"
 
 me = File.expand_path($0)
-if /backup_snapshot$|pairvm_([a-z_]+)$/.match(me)
+if /pairvm_([a-z_]+)$/.match(me) || ARGV[0] == 'backup_snapshot'
   PairVM::Commands.parse($1, *ARGV)
 elsif File.exists?("/machines/_global")
   File.open("/machines/_global") do |lockfile|
