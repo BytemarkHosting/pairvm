@@ -197,7 +197,7 @@ module PairVM
     def command_line_incoming
       if File.file?(@machine.memory_dump_file)
         if Time.now - File.stat(@machine.memory_dump_file).mtime < 120
-          return ["-incoming", "exec: gzip -c -d #{@machine.memory_dump_file}"]
+          return ["-incoming", "exec: cat #{@machine.memory_dump_file}"]
         else
           File.unlink(@machine.memory_dump_file)
         end
@@ -523,7 +523,7 @@ module PairVM
     end
 
     def memory_dump_file
-      "/machines/_#{name}_memory_dump.gz"
+      "/machines/_#{name}_memory_dump"
     end
 
     protected
@@ -861,7 +861,7 @@ module PairVM
       def cmd_send_memory(name)
         machine = Machine.new(name)
         (1..255).each { |fd| IO.for_fd(fd).close rescue nil }
-        exec("gzip -c | ssh #{Global.ips['there']} cat \\\>#{machine.memory_dump_file}")
+        exec("ssh #{Global.ips['there']} cat \\\>#{machine.memory_dump_file}")
 #        exec("gzip -c >/tmp/out")
       end
 
