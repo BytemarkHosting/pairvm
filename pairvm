@@ -1472,21 +1472,13 @@ me = File.expand_path($0)
 if /pairvm_([a-z_]+)$/.match(me) || ARGV[0] == 'backup_snapshot'
   PairVM::Commands.parse($1, *ARGV)
 elsif File.exists?("/machines/_global")
-  File.open("/machines/_global") do |lockfile|
-    # Script must be callable by two aliases for qemu network scripts to work
-    # - if this fails, you'll need to do it yourself.
-    File.symlink(me, me+"_tap_up") unless File.symlink?(me+"_tap_up")
-    File.symlink(me, me+"_tap_down") unless File.symlink?(me+"_tap_down")
-    File.symlink(me, me+"_send_memory") unless File.symlink?(me+"_send_memory")
+  # Script must be callable by two aliases for qemu network scripts to work
+  # - if this fails, you'll need to do it yourself.
+  File.symlink(me, me+"_tap_up") unless File.symlink?(me+"_tap_up")
+  File.symlink(me, me+"_tap_down") unless File.symlink?(me+"_tap_down")
+  File.symlink(me, me+"_send_memory") unless File.symlink?(me+"_send_memory")
 
-    # there's nothing safe about running two of this script
-    lockfile.flock(File::LOCK_EX)
-    begin
-      PairVM::Commands.parse(*ARGV)
-    ensure
-      lockfile.flock(File::LOCK_UN)
-    end
-  end
+  PairVM::Commands.parse(*ARGV)
 else
   STDERR.print "*** pairvm does not look initialised, please run #{$0} first_time_setup\n"
   PairVM::Commands.parse(*ARGV)
