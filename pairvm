@@ -147,7 +147,6 @@ module PairVM
       end
     end
 
-    protected
     # The PID for the currently running KVM.  Returns nil if it's not running,
     # and cleans up any stale PID in the process.
     #
@@ -163,6 +162,8 @@ module PairVM
       File.unlink(pidfile)
       nil
     end
+
+    protected
 
     def expect(socket, string)
       buffer = ""
@@ -538,7 +539,7 @@ module PairVM
       [
       "#{Global.ips['here_drbd']}:#{drbd_port}",
       "#{Global.ips['there_drbd']}:#{drbd_port}",
-        "C",
+        "B",
         "--after-sb-0pri", "discard-zero-changes",
         "--after-sb-1pri", "consensus",
         "--after-sb-2pri", "disconnect"
@@ -692,6 +693,8 @@ module PairVM
         #  is_here && Machine.total_memory_here + mem > Global.max_memory/2
         #error("Won't use >50% of the memory on the other host  (must be < #{mem_left}M)") if
         #  !is_here && Machine.total_memory_there + mem > Global.max_memory/2
+
+        drbd_port = nil if drbd_port == "auto"
 
         drbd_port ||= Machine.allocate_drbd_port
         vnc_screen ||= Machine.allocate_vnc_screen
@@ -1220,6 +1223,105 @@ module PairVM
           "max: #{Global.max_memory}M\n"
       end
 
+      def help_graphite_stats; [
+        "Generate statistics for graphite",
+        ["prefix"],
+        ["sendto"],
+        { "prefix" => "The prefix to use for statistics",
+          "host" => "The hostname or IP address to which to send stats"
+         }
+      ]; end
+      
+      def cmd_graphite_stats(prefix, sendto=nil)
+        
+        out = if sendto
+          ip, port = sendto.split(":")
+          port = port.to_i
+          TCPSocket.new(ip, port)
+        else
+          STDOUT
+        end
+        
+        now = Time.now.to_i
+        machines = Machine.all.select { |m| m.kvm.running? }
+        machines.each do |m|
+          m_prefix = "#{prefix}.pairvm.#{m.name}"
+        
+          %w( ns nr dw dr al bm lo pe ua ap ep oos ).each do |stat|
+            out.print m_prefix+".drbd.#{stat} #{m.drbd.__send__(stat.to_sym)} #{now}\n"
+          end
+          
+          pid_stats = File.open("/proc/#{m.kvm.pid}/stat").read(2000).split(" ")
+          out.print m_prefix+".utime #{pid_stats[13]} #{now}\n"
+          out.print m_prefix+".stime #{pid_stats[13]} #{now}\n"
+        end
+        
+        h_prefix = "#{prefix}.#{`hostname -s`.chomp}"
+        
+        load1, load5, load15, rest = File.read("/proc/loadavg").
+          split(" ", 4)[0..2]
+        out.print "#{h_prefix}.load1 #{load1} #{now}\n"
+        out.print "#{h_prefix}.load5 #{load5} #{now}\n"
+        out.print "#{h_prefix}.load15 #{load15} #{now}\n"
+        
+        out.close
+      end
+
+      def help_backup_snapshot; [
+        "Snapshot & copy the given VM(s) to the given (SSH) destination.",
+        ["name", "destination", "speed"],
+        ["--home"],
+        {"name" => "name of VM to back up (or 'all')",
+         "destination" => "directory or filename destination as in 'user@hostname:/path' with _NAME_ replaced by VM name if present",
+         "speed" => "Speed to limit copy in KB/s",
+         "--home" => "force backup of machine(s) at home (performance penalty)"
+        }
+      ]; end
+      
+      def cmd_backup_snapshot(name, destination, speed, home_flag=false)
+        home_flag = home_flag==true || home_flag=='--home'
+        
+        machines = Machine.all.
+          select { |m| m.away? || (m.at_home? && home_flag) }.
+          select { |m| name == 'all' || m.name == name }
+        
+        raise "No #{home_flag ? 'home' : 'away'} machine found '#{name}'" if
+          machines.empty?
+        
+        machines.each do |m|
+          snapshot_path = m.drbd_backing_device + "_" + Time.now.to_i.to_s
+          snapshot_name = snapshot_path.split("/")[-1]
+          destination_host, destination_path = destination.split(":", 2)
+          
+          system "/sbin/lvcreate --size 2G --snapshot --name #{snapshot_name} "+
+            "#{m.drbd_backing_device}"
+          begin
+            # https://github.com/mpalmer/lvmsync looks cute but complicates
+            # things at the destination end - files will do for now.
+            #
+            # Also - gzip only uses one core, probably safe to really speed
+            #
+            #
+            this_destination_path = destination_path.gsub("_NAME", m.name)
+            temp_path = this_destination_path + ".tmp." + snapshot_name
+            print "Copying #{m.name}: "
+            started = Time.now
+            system "cpipe -s #{speed} < #{snapshot_path} | "+
+              "ssh -C #{destination_host} pbzip2 \\> "+
+              "#{temp_path} \\&\\& "+
+              "mv #{temp_path} #{this_destination_path}"
+              
+            size = File.open(snapshot_path, "r") do |fh| 
+              fh.seek(0,IO::SEEK_END); fh.tell >> 20
+            end
+            duration = (Time.now - started).to_i
+            print "#{size}MB copied in #{duration / 60}m#{duration % 60}s\n"
+          ensure
+            system "/sbin/lvremove --force #{snapshot_path}"
+          end
+        end
+      end
+
       def help_print_ssh_forwards; [
         "Print a list of SSH port forward specifications to access the consoles of any VM on this peer",
         ["offset"],
@@ -1415,6 +1517,9 @@ DONE
         error("socat isn't installed") unless
           File.executable?("/usr/bin/socat")
 
+        error("cpipe isn't installed") unless
+          File.executable?("/usr/bin/cpipe")
+
         error("kpartx isn't installed") unless
           File.executable?("/sbin/kpartx")
 
@@ -1450,7 +1555,7 @@ end
 ENV['LVM_SUPPRESS_FD_WARNINGS'] = "1"
 
 me = File.expand_path($0)
-if /pairvm_([a-z_]+)$/.match(me)
+if /pairvm_([a-z_]+)$/.match(me) || ARGV[0] == 'backup_snapshot'
   PairVM::Commands.parse($1, *ARGV)
 elsif File.exists?("/machines/_global")
   File.open("/machines/_global") do |lockfile|
