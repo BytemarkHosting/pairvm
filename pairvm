@@ -1480,7 +1480,7 @@ end
 ENV['LVM_SUPPRESS_FD_WARNINGS'] = "1"
 
 me = File.expand_path($0)
-if /pairvm_([a-z_]+)$/.match(me) || ARGV[0] == 'backup_snapshot'
+if /pairvm_([a-z_]+)$/.match(me)
   PairVM::Commands.parse($1, *ARGV)
 elsif File.exists?("/machines/_global")
   # Script must be callable by two aliases for qemu network scripts to work
