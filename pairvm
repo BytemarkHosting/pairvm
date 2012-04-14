@@ -1300,18 +1300,11 @@ module PairVM
           system "/sbin/lvcreate --size 4G --snapshot --name #{snapshot_name} "+
             "#{m.drbd_backing_device} >/dev/null"
           begin
-            # https://github.com/mpalmer/lvmsync looks cute but complicates
-            # things at the destination end - files will do for now.
-            #
-            # Also - gzip only uses one core, probably safe to really speed
-            #
-            #
             this_destination_path = destination_path.gsub("_NAME", m.name)
             temp_path = this_destination_path + ".tmp." + snapshot_name
-            print "Copying #{m.name}: "
             started = Time.now
-            system "cpipe -s #{speed} < #{snapshot_path} | "+
-              "ssh -C #{destination_host} pbzip2 \\> "+
+            system "cpipe -s #{speed} < #{snapshot_path} | gzip | "+
+              "ssh -C #{destination_host} cat \\> "+
               "#{temp_path} \\&\\& "+
               "mv #{temp_path} #{this_destination_path}"
               
