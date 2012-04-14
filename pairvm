@@ -419,6 +419,12 @@ module PairVM
         /^[a-z0-9\-]{3,15}$/.match(machine)
       super("/machines/#{machine}", data)
     end
+      
+    def lock_until_exit
+      @lockfile = File.open("/machines/#{name}")
+      raise "Machine #{name} locked" if 
+        @lockfile.flock(File::LOCK_EX | File::LOCK_NB) == false
+    end
 
     def suppress?; get('suppress').to_i == 1; end
     def suppress(suppress); set('suppress', suppress ? 1 : 0); end
@@ -789,6 +795,7 @@ module PairVM
         check_system
 
         machine = Machine.new(name)
+        machine.lock_until_exit
         machine.drbd_attach! unless machine.drbd.configured?
         machine.drbd_connect!
         error("You must run 'pairvm swap' from the home machine (i.e. the other one)") unless machine.at_home?
@@ -839,6 +846,7 @@ module PairVM
       def cmd_swaplive(name, away=nil)
         check_system
         machine = Machine.new(name)
+        machine.lock_until_exit
 
         away = (away == "--away")
 
@@ -870,6 +878,7 @@ module PairVM
       def cmd_drbdsetup(name, *options)
         check_system
         machine = Machine.new(name)
+        machine.lock_until_exit
         machine.drbd.setup(*options)
       end
       
@@ -889,10 +898,10 @@ module PairVM
          }
       ]; end
 
-      def cmd_start(name, *options)
-        check_system
-
+      def cmd_start(name, *options)        
+        check_system        
         machine = Machine.new(name)
+        machine.lock_until_exit
 
         away = false
         disconnected = false
@@ -999,6 +1008,7 @@ module PairVM
         check_system
 
         machine = Machine.new(name)
+        machine.lock_until_exit
         machine.drbd_attach! unless machine.drbd.configured?
         machine.drbd_connect!(extra_options)
         machine.drbd.setup("secondary")
@@ -1029,6 +1039,7 @@ module PairVM
       def cmd_resize(name, new_size, confirm_shrink=nil)
         check_system
         machine = Machine.new(name)
+        machine.lock_until_exit
         machine.drbd_attach! unless machine.drbd.configured?
         machine.drbd_connect!
         current_size_k = machine.disc_size >> 10
@@ -1068,6 +1079,7 @@ module PairVM
       def cmd_split_brain_victim(name, snapshot_size="2G")
         check_system
         machine = Machine.new(name)
+        machine.lock_until_exit
 
         if snapshot_size != "0"
           lv_name = machine.name + "_split_" +
@@ -1285,8 +1297,8 @@ module PairVM
           snapshot_name = snapshot_path.split("/")[-1]
           destination_host, destination_path = destination.split(":", 2)
           
-          system "/sbin/lvcreate --size 2G --snapshot --name #{snapshot_name} "+
-            "#{m.drbd_backing_device}"
+          system "/sbin/lvcreate --size 4G --snapshot --name #{snapshot_name} "+
+            "#{m.drbd_backing_device} >/dev/null"
           begin
             # https://github.com/mpalmer/lvmsync looks cute but complicates
             # things at the destination end - files will do for now.
@@ -1307,9 +1319,8 @@ module PairVM
               fh.seek(0,IO::SEEK_END); fh.tell >> 20
             end
             duration = (Time.now - started).to_i
-            print "#{size}MB copied in #{duration / 60}m#{duration % 60}s\n"
           ensure
-            system "/sbin/lvremove --force #{snapshot_path}"
+            system "/sbin/lvremove --force #{snapshot_path} >/dev/null"
           end
         end
       end
