@@ -1457,11 +1457,17 @@ DONE
         error("You must install drbd8-utils") unless
           File.executable?("/sbin/drbdsetup")
 
-        error("You must symlink drbdadm to /bin/true - it gets in the way!") unless
-          File.symlink?("/sbin/drbdadm") &&
-          File.readlink("/sbin/drbdadm") == "/bin/true"
-
-        system("/sbin/modprobe drbd") unless File.exists?("/proc/drbd")
+        system("/sbin/modprobe drbd usermode_helper=/bin/true") unless
+          File.exists?("/proc/drbd")
+        
+        helper = File.read("/sys/module/drbd/parameters/usermode_helper").chomp
+        if helper == "/sbin/drbdadm"
+          error("You must symlink drbdadm to /bin/true or: echo /bin/true > /sys/module/drbd/parameters/usermode_helper [beware if you are already using drbd]") unless
+            File.symlink?("/sbin/drbdadm") &&
+            File.readlink("/sbin/drbdadm") == "/bin/true"
+        elsif helper != "/bin/true"
+          error("Uknown drbd helper '#{helper}'")
+        end
       end
 
 
