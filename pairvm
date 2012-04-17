@@ -133,7 +133,7 @@ module PairVM
     def monitor_cmd(line)
       UNIXSocket.open(monitorfile) do |m|
         m.sync = true
-        timeout(2) { expect(m, "(qemu) ") }
+        timeout(60) { expect(m, "(qemu) ") }
         m.write(line+"\n")
         return expect(m, "(qemu) ")[0..-8]
       end
@@ -197,7 +197,7 @@ module PairVM
     def command_line_incoming
       if File.file?(@machine.memory_dump_file)
         if Time.now - File.stat(@machine.memory_dump_file).mtime < 120
-          return ["-incoming", "exec: cat #{@machine.memory_dump_file}"]
+          return ["-incoming", "exec: gzip -c -d #{@machine.memory_dump_file}"]
         else
           File.unlink(@machine.memory_dump_file)
         end
@@ -846,7 +846,7 @@ module PairVM
       def cmd_swaplive(name, away=nil)
         check_system
         machine = Machine.new(name)
-        machine.lock_until_exit
+        #machine.lock_until_exit
 
         away = (away == "--away")
 
@@ -857,6 +857,7 @@ module PairVM
         machine.kvm.monitor_cmd("stop")
         machine.kvm.monitor_cmd("migrate_set_speed 4095m")
         machine.kvm.monitor_cmd("migrate \"exec: pairvm_send_memory #{machine.name}\"")
+        
         cmd_stop(machine.name)
         machine.drbd.setup("secondary")        
 
@@ -869,7 +870,7 @@ module PairVM
       def cmd_send_memory(name)
         machine = Machine.new(name)
         (1..255).each { |fd| IO.for_fd(fd).close rescue nil }
-        exec("ssh #{Global.ips['there']} cat \\\>#{machine.memory_dump_file}")
+        exec("gzip -c | ssh #{Global.ips['there']} cat \\\>#{machine.memory_dump_file}")
 #        exec("gzip -c >/tmp/out")
       end
 
@@ -1300,18 +1301,11 @@ module PairVM
           system "/sbin/lvcreate --size 4G --snapshot --name #{snapshot_name} "+
             "#{m.drbd_backing_device} >/dev/null"
           begin
-            # https://github.com/mpalmer/lvmsync looks cute but complicates
-            # things at the destination end - files will do for now.
-            #
-            # Also - gzip only uses one core, probably safe to really speed
-            #
-            #
             this_destination_path = destination_path.gsub("_NAME", m.name)
             temp_path = this_destination_path + ".tmp." + snapshot_name
-            print "Copying #{m.name}: "
             started = Time.now
-            system "cpipe -s #{speed} < #{snapshot_path} | "+
-              "ssh -C #{destination_host} pbzip2 \\> "+
+            system "cpipe -s #{speed} < #{snapshot_path} | gzip | "+
+              "ssh -C #{destination_host} cat \\> "+
               "#{temp_path} \\&\\& "+
               "mv #{temp_path} #{this_destination_path}"
               
