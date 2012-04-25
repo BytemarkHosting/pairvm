@@ -1282,6 +1282,8 @@ module PairVM
          "--home" => "force backup of machine(s) at home (performance penalty)"
         }
       ]; end
+
+      class BackupFailedException < Exception; end
       
       def cmd_backup_snapshot(name, destination, speed, home_flag=false)
         home_flag = home_flag==true || home_flag=='--home'
@@ -1298,23 +1300,30 @@ module PairVM
           snapshot_name = snapshot_path.split("/")[-1]
           destination_host, destination_path = destination.split(":", 2)
           
-          system "/sbin/lvcreate --size 4G --snapshot --name #{snapshot_name} "+
-            "#{m.drbd_backing_device} >/dev/null"
           begin
-            this_destination_path = destination_path.gsub("_NAME", m.name)
-            temp_path = this_destination_path + ".tmp." + snapshot_name
-            started = Time.now
-            system "cpipe -s #{speed} < #{snapshot_path} | gzip | "+
-              "ssh -C #{destination_host} cat \\> "+
-              "#{temp_path} \\&\\& "+
-              "mv #{temp_path} #{this_destination_path}"
+            raise BackupFailedException.new unless
+              system "/sbin/lvcreate --size 4G --snapshot "+
+              "--name #{snapshot_name} #{m.drbd_backing_device} >/dev/null"
+
+            begin
+              this_destination_path = destination_path.gsub("_NAME", m.name)
+              temp_path = this_destination_path + ".tmp." + snapshot_name
+              started = Time.now
+              raise BackupFailedException.new unless
+                system "cpipe -s #{speed} < #{snapshot_path} | gzip | "+
+                "ssh -C #{destination_host} cat \\> "+
+                "#{temp_path} \\&\\& "+
+                "mv #{temp_path} #{this_destination_path}"
               
-            size = File.open(snapshot_path, "r") do |fh| 
-              fh.seek(0,IO::SEEK_END); fh.tell >> 20
+              size = File.open(snapshot_path, "r") do |fh| 
+                fh.seek(0,IO::SEEK_END); fh.tell >> 20
+              end
+              duration = (Time.now - started).to_i
+            ensure
+              system "/sbin/lvremove --force #{snapshot_path} >/dev/null"
             end
-            duration = (Time.now - started).to_i
-          ensure
-            system "/sbin/lvremove --force #{snapshot_path} >/dev/null"
+          rescue BackupFailedException => fail
+            STDERR.print "^^^ Backup for #{m.name} failed\n"
           end
         end
       end
