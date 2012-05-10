@@ -15,6 +15,14 @@ require 'yaml'
 require 'tempfile'
 require 'timeout'
 
+begin
+  require 'rubygems'
+  require 'bytemark_installer/pairvm'
+  BYTEMARK_IMAGER = true
+rescue LoadError
+  BYTEMARK_IMAGER = false
+end
+
 class IPAddr
   class << self
     # Returns the current list of IPs that this Linux machine is claiming
@@ -881,7 +889,7 @@ module PairVM
         machine.lock_until_exit
         machine.drbd.setup(*options)
       end
-      
+
       def cmd_read(name, option)
         check_system
         print Machine.new(name).send(option.to_sym).to_s + "\n"
@@ -1226,7 +1234,7 @@ module PairVM
           "there: #{Machine.total_memory_there}M "+
           "max: #{Global.max_memory}M\n"
       end
-      
+
       def help_graphite_stats; [
         "Generate statistics for graphite",
         ["prefix"],
@@ -1317,7 +1325,7 @@ module PairVM
           end
         end
       end
-      
+
       def help_print_ssh_forwards; [
         "Print a list of SSH port forward specifications to access the consoles of any VM on this peer",
         ["offset"],
@@ -1430,6 +1438,79 @@ DONE
 
       end
 
+      def help_image; [
+        "Install an operating system image into a stopped VM",
+        ["name", "dist", "hostname", "password"],
+        ["firstboot-script"],
+        {
+          "name" => "The name of the VM",
+          "dist" => "The distribution to install",
+          "hostname" => "The fully qualified hostname of the VM",
+          "password" => "The root password for the VM",
+          "firstboot-script" => "A script to run in the VM on first boot"
+        }
+      ]; end
+
+      def cmd_image(name, dist, hostname, password, firstboot_script = nil)
+        check_system
+
+        machine = Machine.new(name)
+
+        error("#{name} is not meant to run here, you must image "+
+          "it from there") unless machine.at_home?
+        
+        kvm = machine.kvm
+        error("Cannot image running VM") if kvm.running?
+
+        
+        machine.drbd.setup("down")
+        machine.drbd_attach!# unless machine.drbd.configured?
+        machine.drbd_connect!
+
+        # If we don't wait for DRBD to connect before we switch to primary,
+        # we risk a split brain.
+        #
+        if !machine.drbd.wait_for_states("Connected", "SyncSource", "SyncTarget")
+          if machine.drbd.cs == "StandAlone"
+            error "DRBD device #{machine.drbd.node} is StandAlone which "+
+              "suggests a split brain.  Run 'split_brain_victim' on one peer "+
+              "or the other to erase its data and resolve the situation."
+          else
+            error "DRBD device #{machine.drbd.node} is not connected "
+          end
+        end
+
+        # Push other host into secondary state
+        ssh_command  = ["ssh", Global.ips['there'], $0]
+        ssh_command += ["-v"] if @verbose
+        ssh_command += ["drbd_connect", machine.name]
+        system(*ssh_command)
+
+        # Now this should work without error
+        #
+        machine.drbd.setup("primary")
+        
+        options = {
+            :dist => dist,
+            :password => password,
+            :hostname => hostname,
+            :ip_address => machine.ip.to_s,
+            :ip_gateway => Global.ips['public'].succ.to_s,
+            :ip_netmask => Global.ips['public'].inspect[/\/([0-9.]+)>/, 1]
+                                              # ^ yuck
+        }
+        if firstboot_script
+          options[:firstboot_script] = begin
+            File.read(firstboot_script)
+          rescue
+            error("Could not read firstboot_script")
+          end
+        end
+        imager = PairvmImager.new(machine.drbd.node, options)
+        error("Imaging failed") unless imager.install
+        puts "#{dist} installed on #{name}."
+      end
+
       def check_system
         error("kvm isn't installed") unless
           File.executable?("/usr/bin/kvm")
@@ -1442,6 +1523,11 @@ DONE
 
         error("cpipe isn't installed") unless
           File.executable?("/usr/bin/cpipe")
+
+        error("kpartx isn't installed") unless
+          File.executable?("/sbin/kpartx")
+
+        error("bytemark-imager isn't installed") unless BYTEMARK_IMAGER
 
         error("You must configure a public bridge called br0 for public IP addresses") unless
           File.directory?("/sys/class/net/br0")
