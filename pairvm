@@ -302,6 +302,10 @@ module PairVM
     def configured?
       @num < DRBD.length && self.cs != "Unconfigured"
     end
+    
+    def primary?
+      @num < DRBD.length && /^Primary/.match(ro)
+    end
 
     # The /dev node corresponding to this DRBD.
     #
@@ -428,10 +432,15 @@ module PairVM
       super("/machines/#{machine}", data)
     end
       
-    def lock_until_exit
-      @lockfile = File.open("/machines/#{name}")
+    def lock
+      @lockfile ||= File.open("/machines/#{name}")
       raise "Machine #{name} locked" if 
         @lockfile.flock(File::LOCK_EX | File::LOCK_NB) == false
+    end
+    
+    def unlock
+      raise "Couldn't unlock" unless @lockfile
+      @lockfile.flock(File::LOCK_UN)
     end
 
     def suppress?; get('suppress').to_i == 1; end
@@ -508,9 +517,11 @@ module PairVM
       drbd_backing_device + "_meta"
     end
 
-    # Map the DRBD to a physical device - will fail if already done.
+    # Map the DRBD to a physical device - will detach first.  This will
+    # fail if the device is in use.
     #
     def drbd_attach!
+      drbd.setup("detach")
       drbd.setup("disk", drbd_backing_device, drbd_meta_device, 0)
     end
 
@@ -520,7 +531,7 @@ module PairVM
     def drbd_connect!(extra_options=[])
       drbd.setup("disconnect")
       drbd.setup("net", *(drbd_net_args + extra_options))
-      drbd.setup("syncer", "-r", 100000)
+      drbd.setup("syncer", "-r", "20M")
     end
 
     # Returns a KVM object for tracking whether this Machine is actually
@@ -803,7 +814,7 @@ module PairVM
         check_system
 
         machine = Machine.new(name)
-        machine.lock_until_exit
+        machine.lock
         machine.drbd_attach! unless machine.drbd.configured?
         machine.drbd_connect!
         error("You must run 'pairvm swap' from the home machine (i.e. the other one)") unless machine.at_home?
@@ -854,7 +865,7 @@ module PairVM
       def cmd_swaplive(name, away=nil)
         check_system
         machine = Machine.new(name)
-        #machine.lock_until_exit
+        #machine.lock
 
         away = (away == "--away")
 
@@ -887,7 +898,7 @@ module PairVM
       def cmd_drbdsetup(name, *options)
         check_system
         machine = Machine.new(name)
-        machine.lock_until_exit
+        machine.lock
         machine.drbd.setup(*options)
       end
 
@@ -910,7 +921,7 @@ module PairVM
       def cmd_start(name, *options)        
         check_system        
         machine = Machine.new(name)
-        machine.lock_until_exit
+        machine.lock
 
         away = false
         disconnected = false
@@ -938,7 +949,7 @@ module PairVM
           machine.at_home? || away
 
         machine.drbd.setup("down")
-        machine.drbd_attach!# unless machine.drbd.configured?
+        machine.drbd_attach! unless machine.drbd.configured?
         machine.drbd_connect!
 
         # If we don't wait for DRBD to connect before we switch to primary,
@@ -971,8 +982,9 @@ module PairVM
 
         if !machine.kvm.running?
           print "Starting #{machine.name}\n"
-          machine.kvm.start!(kvm_options)
           system "/usr/sbin/arping -q -s #{machine.macaddr} -S #{machine.ip} -B -c 1 -i br0 -p || true"
+          machine.unlock
+          machine.kvm.start!(kvm_options)
         end
       end
 
@@ -1017,10 +1029,10 @@ module PairVM
         check_system
 
         machine = Machine.new(name)
-        machine.lock_until_exit
+        machine.lock
         machine.drbd_attach! unless machine.drbd.configured?
         machine.drbd_connect!(extra_options)
-        machine.drbd.setup("secondary")
+        machine.drbd.setup("secondary") unless machine.drbd.primary? 
       end
 
       def help_resize; [
@@ -1048,7 +1060,7 @@ module PairVM
       def cmd_resize(name, new_size, confirm_shrink=nil)
         check_system
         machine = Machine.new(name)
-        machine.lock_until_exit
+        machine.lock
         machine.drbd_attach! unless machine.drbd.configured?
         machine.drbd_connect!
         current_size_k = machine.disc_size >> 10
@@ -1088,7 +1100,7 @@ module PairVM
       def cmd_split_brain_victim(name, snapshot_size="2G")
         check_system
         machine = Machine.new(name)
-        machine.lock_until_exit
+        machine.lock
 
         if snapshot_size != "0"
           lv_name = machine.name + "_split_" +
@@ -1462,6 +1474,8 @@ DONE
       ]; end
 
       def cmd_image(name, dist, hostname, password, firstboot_script = nil)
+        error("bytemark_imager gem not installed") unless BYTEMARK_IMAGER
+
         check_system
 
         machine = Machine.new(name)
@@ -1474,7 +1488,7 @@ DONE
 
         
         machine.drbd.setup("down")
-        machine.drbd_attach!# unless machine.drbd.configured?
+        machine.drbd_attach! unless machine.drbd.configured?
         machine.drbd_connect!
 
         # If we don't wait for DRBD to connect before we switch to primary,
@@ -1536,8 +1550,6 @@ DONE
 
         error("kpartx isn't installed") unless
           File.executable?("/sbin/kpartx")
-
-        error("bytemark-imager isn't installed") unless BYTEMARK_IMAGER
 
         error("You must configure a public bridge called br0 for public IP addresses") unless
           File.directory?("/sys/class/net/br0")
