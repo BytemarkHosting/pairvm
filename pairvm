@@ -435,7 +435,8 @@ module PairVM
     def lock
       @lockfile ||= File.open("/machines/#{name}")
       raise "Machine #{name} locked" if 
-        @lockfile.flock(File::LOCK_EX | File::LOCK_NB) == false
+        @lockfile.flock(File::LOCK_EX | File::LOCK_NB) == false &&
+        !ENV['PAIRVM_IGNORE_LOCK']
     end
     
     def unlock
@@ -1218,11 +1219,11 @@ module PairVM
       def help_list; [
         "List the VMs running on this host and its peer",
         [],
-        [],
-        {}
+        ["param"],
+        {"param"=>"The machine parameter to list (or multiple,separated by commas)"}
       ]; end
 
-      def cmd_list
+      def cmd_list(param=nil)
         check_system
 
         list = Machine.all
@@ -1230,22 +1231,27 @@ module PairVM
           print "No machines configured yet.\n"
           return
         end
-        print "Name            Memory Disc Run?    Home?   VNC  Disc state MAC\n"
+        print "Name            Memory Disc Run?    Home?   VNC  Disc state MAC\n" unless param
         list.each do |machine|
-          printf "%-15s %-6s %-4s %-s %-s :%-3d %-10s %s\n",
-            machine.name,
-            machine.memory.to_s + "M",
-            (machine.disc_size >> 30).to_s + "G",
-            machine.kvm.running? ?  "Running" : "Stopped",
-            machine.at_home? ? "at home" : "away   ",
-            machine.vnc_screen,
-            machine.drbd.configured? ? machine.drbd.cs : "Not set up",
-            machine.macaddr
+          if param
+            print param.split(",").map { |p2| machine.send(p2.to_sym) }.
+              join(" ") + "\n"
+          else
+            printf "%-15s %-6s %-4s %-s %-s :%-3d %-10s %s\n",
+              machine.name,
+              machine.memory.to_s + "M",
+              (machine.disc_size >> 30).to_s + "G",
+              machine.kvm.running? ?  "Running" : "Stopped",
+              machine.at_home? ? "at home" : "away   ",
+              machine.vnc_screen,
+              machine.drbd.configured? ? machine.drbd.cs : "Not set up",
+              machine.macaddr
+            end
         end
 
         print "\nTotal RAM here: #{Machine.total_memory_here}M "+
           "there: #{Machine.total_memory_there}M "+
-          "max: #{Global.max_memory}M\n"
+          "max: #{Global.max_memory}M\n" unless param
       end
 
       def help_graphite_stats; [
