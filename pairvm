@@ -473,6 +473,10 @@ module PairVM
       mac
     end
 
+    def bridge
+      get('bridge') || 'br0'
+    end
+
     # Returns true if we are running on our configured "home" machine
     #
     def at_home?
@@ -669,12 +673,13 @@ module PairVM
             def help_create; [
             "Creates a new virtual machine",
               ["name", "here|there|IP", "memory", "disc_size"],
-                ["ip", "drbd_port", "kvm_options", "vnc_screen", "--no-ssh-to-peer"],
+                ["ip", "bridge", "drbd_port", "kvm_options", "vnc_screen", "--no-ssh-to-peer"],
                 { "name" => "The name of the VM (15 chars max)",
                   "here|there|IP" => "The IP of the machine to run on (or 'here' or 'there')",
                   "memory" => "The number of megabytes of memory to allocate",
                   "disc_size" => "The size of disc to allocate (include prefix, e.g. 50G)",
                   "ip" => "The IP address to use (default is to auto-allocate)",
+                  "bridge" => "Ethernet bridge to use (default is br0)",
                   "drbd_port" => "The DRBD port to use (default is to auto-allocate)",
                   "kvm_options" => "Any permanent KVM options for this VM (default is empty)",
                   "vnc_screen" => "The VNC screen number (default is to auto-allocate)",
@@ -682,7 +687,7 @@ module PairVM
                 }
           ]; end
 
-      def cmd_create(name, here_or_there, mem, disc_size, ip=nil, drbd_port=nil, kvm_options="", vnc_screen=nil, no_ssh_to_peer=nil)
+      def cmd_create(name, here_or_there, mem, disc_size, ip=nil, bridge=nil, drbd_port=nil, kvm_options="", vnc_screen=nil, no_ssh_to_peer=nil)
 
         check_system
 
@@ -717,17 +722,21 @@ module PairVM
         drbd_port ||= Machine.allocate_drbd_port
         vnc_screen ||= Machine.allocate_vnc_screen
         ip ||= Machine.allocate_ip
+        bridge ||= 'br0'
         no_ssh_to_peer = (no_ssh_to_peer == "--no-ssh-to-peer")
 
         error("No DRBD ports left to allocate") unless drbd_port
         error("No VNC screens  left to allocate") unless vnc_screen
         error("No IP addresses left to allocate") unless ip
+        error("No such bridge: #{bridge}") unless
+          File.directory?("/sys/class/net/#{bridge}/bridge")
 
         # Create our logical volumes - 128MB fixed metadata
 
         verbose "creating #{name}"
         machine = Machine.new(name, {
           "ip" => ip,
+          "bridge" => bridge,
           "suppress" => 1,
           "home_machine" => Global.ips[is_here ? 'here' : 'there'].to_s,
           "drbd_port" => drbd_port.to_i,
@@ -768,6 +777,7 @@ module PairVM
             mem,
             disc_size,
             ip,
+            bridge,
             drbd_port,
             '"'+kvm_options+'"',
             vnc_screen,
@@ -997,8 +1007,9 @@ module PairVM
               ]; end
 
       def cmd_tap_up(name)
+        machine = Machine.new(name)
         system "/sbin/ip link set #{name} up promisc on"
-        system "/usr/sbin/brctl addif br0 #{name}"
+        system "/usr/sbin/brctl addif #{machine.bridge} #{name}"
       end
 
           def help_tap_down; [
@@ -1010,7 +1021,7 @@ module PairVM
 
       def cmd_tap_down(name)
         machine = Machine.new(name)
-        system "/usr/sbin/brctl delif br0 #{name}"
+        system "/usr/sbin/brctl delif #{machine.bridge} #{name}"
         system "/sbin/ip link set #{name} down"
         # make sure the other host can become primary without a fight before
         # we switch off
