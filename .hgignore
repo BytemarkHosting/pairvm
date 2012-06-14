@@ -1,3 +1,6 @@
 syntax: glob
 
-thermeon-backup-script/fabfile.pyc
+debian/files
+debian/pairvm.debhelper.log
+debian/pairvm.substvars
+debian/pairvm/
