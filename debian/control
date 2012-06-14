@@ -1,0 +1,16 @@
+Source: pairvm
+Section: admin
+Priority: extra
+Maintainer: Steve Kemp <steve@bytemark.co.uk>
+Build-Depends: debhelper (>= 7.0.0), cdbs
+Standards-Version: 3.9.1
+
+Package: pairvm
+Architecture: all
+Depends: ${misc:Depends}, drbd8-utils, iproute, ruby, lvm2, kpartx, cpipe, arping, bridge-utils
+Description: Virtual machine management software
+ This tool allows the hosting and control of virtual machines using
+ a combination of KVM & DRBD.
+ .
+ Guests gain redundancy by having their drives be block devices shared
+ across hosts by DRBD.
