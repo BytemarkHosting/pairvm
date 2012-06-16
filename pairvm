@@ -1314,7 +1314,7 @@ module PairVM
         ["name", "destination", "speed"],
         ["--home"],
         {"name" => "name of VM to back up (or 'all')",
-         "destination" => "directory or filename destination as in 'user@hostname:/path' with _NAME_ replaced by VM name if present",
+         "destination" => "directory or filename destination as in 'user@hostname:/path' with _NAME replaced by VM name if present",
          "speed" => "Speed to limit copy in KB/s",
          "--home" => "force backup of machine(s) at home (performance penalty)"
         }
