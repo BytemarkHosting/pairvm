@@ -534,6 +534,7 @@ module PairVM
     # and reconfigure each time, which should be harmless.
     #
     def drbd_connect!(extra_options=[])
+      extra_options = [ extra_options ] unless extra_options.kind_of?(Array)
       drbd.setup("disconnect")
       drbd.setup("net", *(drbd_net_args + extra_options))
       drbd.setup("syncer", "-r", "20M")
@@ -889,6 +890,11 @@ module PairVM
         machine.kvm.monitor_cmd("stop")
         machine.kvm.monitor_cmd("migrate_set_speed 4095m")
         machine.kvm.monitor_cmd("migrate \"exec: pairvm_send_memory #{machine.name}\"")
+        unless /Migration status: completed/ =~
+          machine.kvm.monitor_cmd('info migrate')
+           machine.kvm.monitor_cmd("cont")
+           error("KVM migration failed:\n#{migration_message}")
+        end
         
         cmd_stop(machine.name)
         machine.drbd.setup("secondary")        
