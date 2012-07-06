@@ -840,6 +840,7 @@ module PairVM
         old_mem = machine.memory
         old_disc_size = "#{machine.disc_size >> 10}K"
         old_ip = machine.ip.to_s
+        old_bridge = machine.bridge
         old_drbd_port = machine.drbd_port
         old_kvm_options = machine.kvm_options
         old_vnc_screen = machine.vnc_screen
@@ -856,7 +857,8 @@ module PairVM
         # machine 'there', but forcing ourselves into the primary state so that
         # our data overwrites that on the new "home" machine.
         #
-        cmd_create(name, "there", old_mem, old_disc_size, old_ip, old_drbd_port, old_kvm_options, old_vnc_screen)
+        cmd_create(name, "there", old_mem, old_disc_size, old_ip, old_bridge,
+          old_drbd_port, old_kvm_options, old_vnc_screen)
         machine.drbd.setup("down")
         system("dd", "if=#{tmp_backing_device}", "of=#{machine.drbd_backing_device}")
         system("/sbin/lvremove", "-f", tmp_backing_device)
