@@ -18,9 +18,7 @@ require 'timeout'
 begin
   require 'rubygems'
   require 'bytemark_installer/pairvm'
-  BYTEMARK_IMAGER = true
 rescue LoadError
-  BYTEMARK_IMAGER = false
 end
 
 class IPAddr
@@ -1355,7 +1353,7 @@ module PairVM
               temp_path = this_destination_path + ".tmp." + snapshot_name
               started = Time.now
               raise BackupFailedException.new unless
-                system "cpipe -s #{speed} < #{snapshot_path} | gzip | "+
+                system "gzip -c #{snapshot_path} | cpipe -s #{speed} | "+
                 "ssh -C #{destination_host} cat \\> "+
                 "#{temp_path} \\&\\& "+
                 "mv #{temp_path} #{this_destination_path}"
@@ -1499,7 +1497,7 @@ DONE
       ]; end
 
       def cmd_image(name, dist, hostname, password, firstboot_script = nil)
-        error("bytemark_imager gem not installed") unless BYTEMARK_IMAGER
+        error("bytemark_imager gem not installed") unless defined?(PairvmImager)
 
         check_system
 
