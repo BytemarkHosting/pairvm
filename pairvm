@@ -906,6 +906,7 @@ module PairVM
       def cmd_send_memory(name)
         machine = Machine.new(name)
         (1..255).each { |fd| IO.for_fd(fd).close rescue nil }
+        STDERR.reopen(File.open("/tmp/send_memory_stderr.#{name}.#{$$}", 'w'))
         exec("gzip -c | ssh #{Global.ips['there']} cat \\\>#{machine.memory_dump_file}")
 #        exec("gzip -c >/tmp/out")
       end
