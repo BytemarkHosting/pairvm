@@ -568,6 +568,65 @@ module PairVM
     end
   end
 
+  #
+  # A class for parsing Debian's /etc/network/interfaces, looking for
+  # netmask and gateway addresses on bridges or interfaces that are
+  # attached to bridges.
+  #
+  class EtcNetworkInterfaces
+    def initialize(file='/etc/network/interfaces')
+      @file = file
+    end
+
+    def gateway(bridge)
+      find_stanza(bridge, 'gateway')
+    end
+
+    def netmask(bridge)
+      find_stanza(bridge, 'netmask')
+    end
+
+  private
+
+    def find_stanza(bridge, stanza)
+      br = stanzas(bridge)
+      if br && br[stanza]
+        br[stanza].first
+      else
+        if br && br['bridge-ports']
+          port = stanzas(br['bridge-ports'].first)
+          if port && port[stanza]
+            port[stanza].first
+          end
+        end
+      end
+    end
+
+    def stanzas(iface)
+      result = nil
+      File.read(@file).each_line { |line|
+        line.chomp!
+        if result
+          case line
+          when /^\s*iface\s/, /^\s*mapping\s/, /^\s*auto\s/, /^\s*allow-/
+            break
+          when /^\s*(#.*)?$/
+            next
+          else
+            key = line[/^\s*([\w-]+)/, 1]
+            result[key] ||= []
+            result[key] << line[/^\s*[\w-]+\s+(.*)(#.*)?$/, 1]
+          end
+        else
+          next unless line =~ /^\s*iface\s+#{iface}(\s.*)?$/
+          result = Hash.new
+        end
+      }
+
+      result
+    end
+  end
+
   # Command line parser
   #
   module Commands
@@ -1510,6 +1569,29 @@ DONE
         kvm = machine.kvm
         error("Cannot image running VM") if kvm.running?
 
+        if machine.bridge == 'br0'
+          gateway = Global.ips['public'].succ.to_s
+          netmask = Global.ips['public'].inspect[/\/([0-9.]+)>/, 1]
+                                         # ^ yuck - FIXME
+        else
+          # For any bridge other than br0 we try to guess the netmask
+          # and gateway by looking in /etc/network/interfaces.
+          #
+          # FIXME: this is a bit clunky. There's go guarantee that the
+          # information we need is available in /etc/network/interfaces
+          # or that it reflects the current network configuration. It
+          # might be better to pass the netmask and gateway as arguments.
+          
+          etc_network_interfaces = EtcNetworkInterfaces.new
+          gateway = etc_network_interfaces.gateway(machine.bridge)
+          netmask = etc_network_interfaces.netmask(machine.bridge)
+
+          error 'Unable to work out the netmask for this machine.' +
+            'Trying adding it to /etc/network/interfaces.' unless netmask
+
+          gateway = machine.ip.mask(netmask).succ.to_s unless gateway
+        end
+
         
         machine.drbd.setup("down")
         machine.drbd_attach! unless machine.drbd.configured?
@@ -1543,9 +1625,8 @@ DONE
             :password => password,
             :hostname => hostname,
             :ip_address => machine.ip.to_s,
-            :ip_gateway => Global.ips['public'].succ.to_s,
-            :ip_netmask => Global.ips['public'].inspect[/\/([0-9.]+)>/, 1]
-                                              # ^ yuck
+            :ip_gateway => gateway,
+            :ip_netmask => netmask
         }
         if firstboot_script
           options[:firstboot_script] = begin
