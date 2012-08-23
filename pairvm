@@ -735,7 +735,7 @@ module PairVM
                 { "name" => "The name of the VM (15 chars max)",
                   "here|there|IP" => "The IP of the machine to run on (or 'here' or 'there')",
                   "memory" => "The number of megabytes of memory to allocate",
-                  "disc_size" => "The size of disc to allocate (include prefix, e.g. 50G)",
+                  "disc_size" => "The size of disc to allocate (include suffix, e.g. 50G)",
                   "ip" => "The IP address to use (default is to auto-allocate)",
                   "bridge" => "Ethernet bridge to use (default is br0)",
                   "drbd_port" => "The DRBD port to use (default is to auto-allocate)",
@@ -748,6 +748,9 @@ module PairVM
       def cmd_create(name, here_or_there, mem, disc_size, ip=nil, bridge=nil, drbd_port=nil, kvm_options="", vnc_screen=nil, no_ssh_to_peer=nil)
 
         check_system
+
+        error("Include suffix with disc_size, e.g. 50G") unless
+          disc_size =~ /[MGTPE]$/
 
         if here_or_there == Global.ips['here'].to_s
           here_or_there = "here"
