@@ -8,6 +8,7 @@ Standards-Version: 3.9.1
 Package: pairvm
 Architecture: all
 Depends: ${misc:Depends}, drbd8-utils, iproute, ruby, lvm2, kpartx, cpipe, arping, bridge-utils, kvm, socat
+Recommends: vlan
 Description: Virtual machine management software
  This tool allows the hosting and control of virtual machines using
  a combination of KVM & DRBD.
