@@ -1,0 +1,35 @@
+_pairvm()
+{
+    local cur prev opts
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    # top-level commands
+    opts="autostart backup_snapshot cdrom create destroy drbd_connect first_time_setup graphite_stats help image list monitor print_ssh_forwards resize split_brain_victim start stop suppress swap swaplive tap_down tap_up"
+
+
+    #
+    # Per-command handling
+    #
+    if [[ ${prev} == "start" ]] ; then
+        stopped=$(pairvm list 2>/dev/null | grep Stopped | awk '{print $1}')
+        COMPREPLY=( $(compgen -W "${stopped}" -- ${cur}) )
+        return 0
+    fi
+
+    if [[ ${prev} == "stop" ]] ; then
+        running=$(pairvm list 2>/dev/null | grep Running | awk '{print $1}')
+        COMPREPLY=( $(compgen -W "${running}" -- ${cur}) )
+        return 0
+    fi
+
+
+    #
+    # Fallback to top-level completion
+    #
+    COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
+    return 0
+}
+complete -F _pairvm pairvm
+
