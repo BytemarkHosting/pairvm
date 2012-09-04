@@ -1062,7 +1062,8 @@ module PairVM
 
         if !machine.kvm.running?
           print "Starting #{machine.name}\n"
-          system "/usr/sbin/arping -q -s #{machine.macaddr} -S #{machine.ip} -B -c 1 -i br0 -p || true"
+          system "/usr/sbin/arping -q -s #{machine.macaddr} " +
+            "-S #{machine.ip} -B -c 1 -i #{machine.bridge} -p || true"
           machine.unlock
           machine.kvm.start!(kvm_options)
         end
