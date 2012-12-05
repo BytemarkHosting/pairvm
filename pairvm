@@ -1568,9 +1568,15 @@ DONE
 
       def cmd_serial(name, escape=29)
         check_system
+
+        machine = Machine.new(name)
+        error("Machine is not running") unless machine.kvm.running?
+        error("Missing serial socket - machine needs to be restarted") unless
+          File.exists?(machine.kvm.serialfile)
+
         puts 'Press CTRL-] to disconnect...' if escape == 29
         exec('/usr/bin/socat',
-          "UNIX-CONNECT:#{Machine.new(name).kvm.serialfile}",
+          "UNIX-CONNECT:#{machine.kvm.serialfile}",
           "STDIO,raw,echo=0,escape=#{escape}")
       end
 
