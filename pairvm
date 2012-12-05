@@ -135,6 +135,12 @@ module PairVM
       "/machines/.#{@machine.name}.monitor"
     end
 
+    # the name of the UNIX socket connected to the VM's serial port,
+    # based on the Machine's name.
+    def serialfile
+      "/machines/.#{@machine.name}.serial"
+    end
+
     # run the given monitor command
     def monitor_cmd(line)
       UNIXSocket.open(monitorfile) do |m|
@@ -183,6 +189,7 @@ module PairVM
       "-daemonize",
       "-pidfile", pidfile,
       "-monitor", "unix:#{monitorfile},server,nowait",
+      "-serial", "unix:#{serialfile},server,nowait",
       "-drive", "file=#{@machine.drbd.node},if=#{@machine.driver_disk}",
       "-m", @machine.memory.to_s,
       "-vnc", "127.0.0.1:"+@machine.vnc_screen.to_s,
@@ -1547,6 +1554,24 @@ Looks good!  Now do the same on #{ips['there']}, making sure to swap
 'here' and 'there' values around.
 DONE
 
+      end
+
+      def help_serial; [
+        "Connect to a running VM's serial port",
+        ["name"],
+        ["escape"],
+        {
+          "name" => "The name of the VM",
+          "escape" => "character code to disconnect (default 29: CTRL-])"
+        }
+      ]; end
+
+      def cmd_serial(name, escape=29)
+        check_system
+        puts 'Press CTRL-] to disconnect...' if escape == 29
+        exec('/usr/bin/socat',
+          "UNIX-CONNECT:#{Machine.new(name).kvm.serialfile}",
+          "STDIO,raw,echo=0,escape=#{escape}")
       end
 
       def help_image; [
