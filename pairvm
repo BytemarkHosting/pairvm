@@ -1184,6 +1184,8 @@ module PairVM
         machine = Machine.new(name)
         machine.lock
 
+        error("Cannot fix split-brain with locally running VM") if kvm.running?
+
         if snapshot_size != "0"
           lv_name = machine.name + "_split_" +
             Time.now.strftime("%Y%m%d%H%M%S")
