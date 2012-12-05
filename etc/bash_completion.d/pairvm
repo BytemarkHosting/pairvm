@@ -6,7 +6,7 @@ _pairvm()
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     # top-level commands
-    opts="autostart backup_snapshot cdrom create destroy drbd_connect first_time_setup graphite_stats help image list monitor print_ssh_forwards resize split_brain_victim start stop suppress swap swaplive tap_down tap_up"
+    opts="autostart backup_snapshot cdrom create destroy drbd_connect first_time_setup graphite_stats help image list monitor print_ssh_forwards resize split_brain_victim serial start stop suppress swap swaplive tap_down tap_up"
 
 
     #
@@ -19,6 +19,12 @@ _pairvm()
     fi
 
     if [[ ${prev} == "stop" ]] ; then
+        running=$(pairvm list 2>/dev/null | grep Running | awk '{print $1}')
+        COMPREPLY=( $(compgen -W "${running}" -- ${cur}) )
+        return 0
+    fi
+
+    if [[ ${prev} == "serial" ]] ; then
         running=$(pairvm list 2>/dev/null | grep Running | awk '{print $1}')
         COMPREPLY=( $(compgen -W "${running}" -- ${cur}) )
         return 0
