@@ -1427,7 +1427,7 @@ module PairVM
               started = Time.now
               raise BackupFailedException.new unless
                 system "gzip -c #{snapshot_path} | cpipe -s #{speed} | "+
-                "ssh -C #{destination_host} cat \\> "+
+                "ssh #{destination_host} cat \\> "+
                 "#{temp_path} \\&\\& "+
                 "mv #{temp_path} #{this_destination_path}"
               
