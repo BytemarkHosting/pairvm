@@ -1191,7 +1191,7 @@ module PairVM
         machine = Machine.new(name)
         machine.lock
 
-        error("Cannot fix split-brain with locally running VM") if kvm.running?
+        error("Cannot fix split-brain with locally running VM") if machine.kvm.running?
 
         if snapshot_size != "0"
           lv_name = machine.name + "_split_" +
