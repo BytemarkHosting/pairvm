@@ -800,6 +800,7 @@ module PairVM
         #  !is_here && Machine.total_memory_there + mem > Global.max_memory/2
 
         drbd_port = nil if drbd_port == "auto"
+        vnc_screen = nil if vnc_screen == "auto"
 
         drbd_port ||= Machine.allocate_drbd_port
         vnc_screen ||= Machine.allocate_vnc_screen
