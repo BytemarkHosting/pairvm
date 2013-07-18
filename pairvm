@@ -14,6 +14,7 @@ require 'ipaddr'
 require 'yaml'
 require 'tempfile'
 require 'timeout'
+require 'digest/md5'
 
 begin
   require 'rubygems'
@@ -64,6 +65,14 @@ module PairVM
     #
     def name
       @name.split("/")[-1]
+    end
+
+    # generate an MD5 digest from the file, ignoring comments, and any
+    # keys to be excluded.
+    def digest(*exclude)
+      data = YAML::load(File.read(@name))
+      exclude.each { |key| data.delete(key) }
+      Digest::MD5.hexdigest(data.to_a.sort.to_s)
     end
 
     protected
@@ -447,6 +456,10 @@ module PairVM
     def unlock
       raise "Couldn't unlock" unless @lockfile
       @lockfile.flock(File::LOCK_UN)
+    end
+
+    def digest
+      super('macaddr')
     end
 
     def suppress?; get('suppress').to_i == 1; end
@@ -954,6 +967,17 @@ module PairVM
         error("Can't move if machine isn't running") unless machine.kvm.running?
         error("Must specify --away if moving from the home machine") if
           machine.at_home? && !away
+
+        cmd = [ 
+          "ssh",
+          Global.ips['there'],
+          $0,
+          "chkconfig",
+          "#{machine.name}",
+          "#{machine.digest}",
+        ].map { |a| a.to_s }
+        error("Refusing to swaplive whilst there is a config mismatch") unless
+          Kernel::system(*cmd)
 
         machine.kvm.monitor_cmd("stop")
         machine.kvm.monitor_cmd("migrate_set_speed 4095m")
@@ -1676,6 +1700,14 @@ DONE
         imager = PairvmImager.new(machine.drbd.node, options)
         error("Imaging failed") unless imager.install
         puts "#{dist} installed on #{name}."
+      end
+
+      def cmd_chkconfig(name, sum)
+        check_system
+
+        machine = Machine.new(name)
+        
+        exit machine.digest == sum ? 0 : 1
       end
 
       def check_system
