@@ -75,6 +75,11 @@ module PairVM
       Digest::MD5.hexdigest(data.to_a.sort.to_s)
     end
 
+    # return the contents of the YAML backing file
+    def yaml
+      File.read(@name)
+    end
+
     protected
 
     # read a key from the file
@@ -1004,6 +1009,12 @@ module PairVM
         STDERR.reopen(File.open("/tmp/send_memory_stderr.#{name}.#{$$}", 'w'))
         exec("gzip -c | ssh #{host} cat \\\>#{machine.memory_dump_file}")
 #        exec("gzip -c >/tmp/out")
+      end
+
+      def cmd_printconfig(name)
+        check_system
+        machine = Machine.new(name)
+        puts machine.yaml
       end
 
       # handy secret command for manual drbd fiddling
