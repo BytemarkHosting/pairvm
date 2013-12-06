@@ -985,6 +985,9 @@ module PairVM
         error("Refusing to swaplive whilst there is a config mismatch") unless
           Kernel::system(*cmd)
 
+        error("Can't move the machine until DRBD is connected and in sync") unless
+          machine.drbd.wait_for_states("Connected")
+
         machine.kvm.monitor_cmd("stop")
         machine.kvm.monitor_cmd("migrate_set_speed 4095m")
         machine.kvm.monitor_cmd("migrate \"exec: pairvm_send_memory #{machine.name} #{Global.ips['there']}\"")
