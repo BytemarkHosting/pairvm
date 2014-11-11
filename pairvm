@@ -336,7 +336,7 @@ module PairVM
     # true if it got there, or false if it timed out.
     #
     def wait_for_states(*desired_states)
-      wait_until = Time.now + 10
+      wait_until = Time.now + Global.drbd_timeout
       while Time.now < wait_until
         return true if desired_states.member?(self.cs)
         sleep 1
@@ -373,6 +373,7 @@ module PairVM
     def drbd_ports
       Range.new(*get('drbd_ports').split(/[^\d]+/, 2).map { |s| s.to_i })
     end
+    def drbd_timeout; (get('drbd_timeout') || 10).to_i; end
     def kvm; get('kvm') || "/usr/bin/kvm"; end
     def kvm_options; get('kvm_options') || ""; end
     def max_memory
@@ -1130,7 +1131,8 @@ module PairVM
       def cmd_tap_up(name)
         machine = Machine.new(name)
         system "/sbin/ip link set #{name} up promisc on"
-        system "/usr/sbin/brctl addif #{machine.bridge} #{name}"
+        brctl = File.exist?('/usr/sbin/brctl') ? '/usr/sbin/brctl' : '/sbin/brctl'
+        system "#{brctl} addif #{machine.bridge} #{name}"
       end
 
           def help_tap_down; [
