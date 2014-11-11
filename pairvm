@@ -991,7 +991,11 @@ module PairVM
         machine.kvm.monitor_cmd("stop")
         machine.kvm.monitor_cmd("migrate_set_speed 4095m")
         machine.kvm.monitor_cmd("migrate \"exec: pairvm_send_memory #{machine.name} #{Global.ips['there']}\"")
-        migration_message = machine.kvm.monitor_cmd('info migrate')
+        migration_message = nil
+        while !migration_message || /Migration status: active/ =~ migration_message
+          migration_message = machine.kvm.monitor_cmd('info migrate')
+          sleep 1
+        end
         unless /Migration status: completed/ =~ migration_message
            machine.kvm.monitor_cmd("cont")
            error("KVM migration failed:\n#{migration_message}")
