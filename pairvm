@@ -1082,15 +1082,15 @@ module PairVM
         # If we don't wait for DRBD to connect before we switch to primary,
         # we risk a split brain.
         #
-        if !machine.drbd.wait_for_states("Connected", "SyncSource", "SyncTarget")
+        if !machine.drbd.wait_for_states("Connected")
           if machine.drbd.cs == "StandAlone"
             error "DRBD device #{machine.drbd.node} is StandAlone which "+
               "suggests a split brain.  Run 'split_brain_victim' on one peer "+
               "or the other to erase its data and resolve the situation."
           elsif !disconnected
-            error "DRBD device #{machine.drbd.node} is not connected - use "+
-              "--disconnected if you want to run without the peer (risking "+
-              "split brain later)."
+            error "DRBD device #{machine.drbd.node} is not connected and in " +
+              "sync - use --disconnected if you want to run without the " +
+              "peer (risking split brain later)."
           end
         end
 
