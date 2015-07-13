@@ -1502,17 +1502,13 @@ module PairVM
 
         offset = offset.to_i
         print "OpenSSH port forwards: "
-        num = 0
         machines = Machine.all.select { |m| m.kvm.running? }.sort { |a,b| a.vnc_screen <=> b.vnc_screen }
         machines.each do |machine|
-          print "-L #{5900+offset+num}:localhost:#{5900+machine.vnc_screen} "
-          num += 1
+          print "-L #{5900+offset+machine.vnc_screen}:localhost:#{5900+machine.vnc_screen} "
         end
         print "\n\n"
-        num = 0
         machines.each do |machine|
-          print "#{machine.name} is on VNC localhost:#{offset+num}\n"
-          num += 1
+          print "#{machine.name} is on VNC localhost:#{offset+machine.vnc_screen}\n"
         end
       end
 
