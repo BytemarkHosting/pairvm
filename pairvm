@@ -3,7 +3,7 @@
 # pairvm is a tool to manage virtual machines over pairs of co-operating
 # servers to achieve high availability and simple failover.
 #
-# (C) Bytemark Hosting 2010-12, distributable under the terms of the
+# (C) Bytemark Hosting 2010-15, distributable under the terms of the
 # GNU General Public License version 3 or later.
 #
 # To install on a Debian/squeeze system:
