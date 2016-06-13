@@ -1030,7 +1030,7 @@ module PairVM
         end
         
         cmd_stop(machine.name)
-        machine.drbd.setup("secondary")        
+        error("Failed to enter secondary") unless machine.drbd.set_secondary
 
         # use --disconnected to avoid a connection back to ourselves and deadlock
         cmd = ["ssh", Global.ips['there'], $0, "start", "#{machine.name}", "--disconnected"]
