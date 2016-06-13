@@ -328,7 +328,7 @@ module PairVM
         setup(role)
         if @num < DRBD.length && r.match(ro)
           STDERR.puts "DRBD now in #{role}" if a > 0
-          return false
+          return true
         end
         STDERR.puts "WARNING: failed to put DRBD into #{role}, attempt #{a + 1}"
         sleep 2
