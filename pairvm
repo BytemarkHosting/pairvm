@@ -321,6 +321,33 @@ module PairVM
     def configured?
       @num < DRBD.length && self.cs != "Unconfigured"
     end
+
+    def set_role(role)
+      r = Regexp.new("^#{role}", "i")
+      30.times { |a|
+        setup(role)
+        if @num < DRBD.length && r.match(ro)
+          STDERR.puts "DRBD now in #{role}" if a > 0
+          return false
+        end
+        STDERR.puts "WARNING: failed to put DRBD into #{role}, attempt #{a + 1}"
+        sleep 2
+      }
+      if @num < DRBD.length && r.match(ro)
+        true
+      else
+        STDERR.puts "ERROR: failed to put DRBD into #{role}"
+        false
+      end
+    end
+
+    def set_primary
+      set_role("primary")
+    end
+
+    def set_secondary
+      set_role("secondary")
+    end
     
     def primary?
       @num < DRBD.length && /^Primary/.match(ro)
