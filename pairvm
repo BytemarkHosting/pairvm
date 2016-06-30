@@ -1018,7 +1018,7 @@ module PairVM
 
         machine.kvm.monitor_cmd("stop")
         machine.kvm.monitor_cmd("migrate_set_speed 4095m")
-        machine.kvm.monitor_cmd("migrate \"exec: pairvm_send_memory #{machine.name} #{Global.ips['there']}\"")
+        machine.kvm.monitor_cmd("migrate \"exec: pairvm_send_memory #{machine.name}\"")
         migration_message = nil
         while !migration_message || /Migration status: active/ =~ migration_message
           migration_message = machine.kvm.monitor_cmd('info migrate')
@@ -1028,6 +1028,9 @@ module PairVM
            machine.kvm.monitor_cmd("cont")
            error("KVM migration failed:\n#{migration_message}")
         end
+
+        cmd = ["scp", "#{machine.memory_dump_file}", "#{Global.ips['there']}:#{machine.memory_dump_file}"]
+        error("Failed to copy memory file") unless system(*cmd)
         
         cmd_stop(machine.name)
         error("Failed to enter secondary") unless machine.drbd.set_secondary
@@ -1038,12 +1041,11 @@ module PairVM
         system(*cmd)
       end
 
-      def cmd_send_memory(name, host)
+      def cmd_send_memory(name)
         machine = Machine.new(name)
         (1..255).each { |fd| IO.for_fd(fd).close rescue nil }
         STDERR.reopen(File.open("/tmp/send_memory_stderr.#{name}.#{$$}", 'w'))
-        exec("gzip -c | ssh #{host} cat \\\>#{machine.memory_dump_file}")
-#        exec("gzip -c >/tmp/out")
+        exec("gzip -c >#{machine.memory_dump_file}")
       end
 
       def cmd_printconfig(name)
