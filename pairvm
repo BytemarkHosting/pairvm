@@ -200,6 +200,7 @@ module PairVM
     def command_line
       me = File.expand_path($0)
       [Global.kvm,
+      "-enable-kvm",
       "-daemonize",
       "-pidfile", pidfile,
       "-monitor", "unix:#{monitorfile},server,nowait",
