@@ -1278,7 +1278,9 @@ module PairVM
         machine.drbd.setup("down")
         machine.drbd_connect!("--discard-my-data") # do the damage now we have a backup
 
-        verbose "Created snapshot #{lv_name}, original will now be overwritten by peer"
+        STDERR.puts "Created snapshot #{lv_name}, original will now be overwritten by peer."
+        STDERR.puts "Remove #{lv_name} as soon as is practical as it will"
+        STDERR.puts "negatively affect performance."
       end
 
             def help_stop; [
