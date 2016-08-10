@@ -20,9 +20,8 @@ for DRBD replication. There is a shared pool of IPs for VMs that
 Installation
 ------------
 
-The code is available from the [mercurial
-repository](/projects/pairvm/repository), and we also automatically
-build and release Debian packages:
+The code is available on [github](https://github.com/BytemarkHosting/pairvm),
+and we also automatically build and release Debian packages:
 
 -   http://repo.bytemark.co.uk/pairvm/
 
