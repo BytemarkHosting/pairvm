@@ -408,6 +408,7 @@ module PairVM
     def max_memory
       get('max_memory') || (File.read("/proc/meminfo").split("\n")[0].split(/\s+/)[1].to_i >> 10) - 1000
     end
+    def snapshot_size; get('snapshot_size') || '4G'; end
   end
 
   #
@@ -529,6 +530,8 @@ module PairVM
     def bridge
       get('bridge') || 'br0'
     end
+
+    def snapshot_size; get('snapshot_size') || Global.snapshot_size; end
 
     # Returns true if we are running on our configured "home" machine
     #
@@ -1260,19 +1263,20 @@ module PairVM
             def help_split_brain_victim; [
               "Designate the VM data on this host as a 'split brain victim' and erase it to resume replication",
                 ["name"],
-                  [],
+                ["snapshot_size"],
         { "name" => "The name of the VM" ,
-                  "snapshot_size" => "The size of the snapshot to create before erasing the data (default 2G, say '0' if you just want to erase it)"
+                  "snapshot_size" => "The size of the snapshot to create before erasing the data (say '0' if you just want to erase it)"
                 }
             ]; end
 
-      def cmd_split_brain_victim(name, snapshot_size="2G")
+      def cmd_split_brain_victim(name, snapshot_size=nil)
         check_system
         machine = Machine.new(name)
         machine.lock
 
         error("Cannot fix split-brain with locally running VM") if machine.kvm.running?
 
+        snapshot_size = machine.snapshot_size if snapshot_size.nil?
         if snapshot_size != "0"
           lv_name = machine.name + "_split_" +
             Time.now.strftime("%Y%m%d%H%M%S")
@@ -1282,9 +1286,11 @@ module PairVM
         machine.drbd.setup("down")
         machine.drbd_connect!("--discard-my-data") # do the damage now we have a backup
 
-        STDERR.puts "Created snapshot #{lv_name}, original will now be overwritten by peer."
-        STDERR.puts "Remove #{lv_name} as soon as is practical as it will"
-        STDERR.puts "negatively affect performance."
+        if snapshot_size != '0'
+          STDERR.puts "Created snapshot #{lv_name}, original will now be overwritten by peer."
+          STDERR.puts "Remove #{lv_name} as soon as is practical as it will"
+          STDERR.puts "negatively affect performance."
+        end
       end
 
             def help_stop; [
@@ -1473,18 +1479,27 @@ module PairVM
       def help_backup_snapshot; [
         "Snapshot & copy the given VM(s) to the given (SSH) destination.",
         ["name", "destination", "speed"],
-        ["--home"],
+        ["snapshot_size", "--home"],
         {"name" => "name of VM to back up (or 'all')",
          "destination" => "directory or filename destination as in 'user@hostname:/path' with _NAME replaced by VM name if present",
          "speed" => "Speed to limit copy in KB/s",
+         "snapshot_size" => "The size of the snapshot to take for backup",
          "--home" => "force backup of machine(s) at home (performance penalty)"
         }
       ]; end
 
       class BackupFailedException < Exception; end
       
-      def cmd_backup_snapshot(name, destination, speed, home_flag=false)
-        home_flag = home_flag==true || home_flag=='--home'
+      def cmd_backup_snapshot(name, destination, speed, *options)
+        sshot_size = nil
+        home_flag = false
+        options.each { |o|
+          if o == '--home'
+            home_flag = true
+          else
+            sshot_size = o
+          end
+        }
         
         machines = Machine.all.
           select { |m| m.away? || (m.at_home? && home_flag) }.
@@ -1496,11 +1511,12 @@ module PairVM
         machines.each do |m|
           snapshot_path = m.drbd_backing_device + "_" + Time.now.to_i.to_s
           snapshot_name = snapshot_path.split("/")[-1]
+          snapshot_size = sshot_size || m.snapshot_size
           destination_host, destination_path = destination.split(":", 2)
           
           begin
             raise BackupFailedException.new unless
-              system "/sbin/lvcreate --size 4G --snapshot "+
+              system "/sbin/lvcreate --size #{snapshot_size} --snapshot "+
               "--name #{snapshot_name} #{m.drbd_backing_device} >/dev/null"
 
             begin
