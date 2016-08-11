@@ -1504,10 +1504,11 @@ module PairVM
               temp_path = this_destination_path + ".tmp." + snapshot_name
               started = Time.now
               raise BackupFailedException.new unless
-                system "gzip -c #{snapshot_path} | cpipe -s #{speed} | "+
+                system "bash -o pipefail -c "+
+                "'gzip -c #{snapshot_path} | cpipe -s #{speed} | "+
                 "ssh #{destination_host} cat \\> "+
                 "#{temp_path} \\&\\& "+
-                "mv #{temp_path} #{this_destination_path}"
+                "mv #{temp_path} #{this_destination_path}'"
               
               size = File.open(snapshot_path, "r") do |fh| 
                 fh.seek(0,IO::SEEK_END); fh.tell >> 20
