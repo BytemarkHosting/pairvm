@@ -807,6 +807,8 @@ module PairVM
 
         error("Include suffix with disc_size, e.g. 50G") unless
           disc_size =~ /[MGTPE]$/
+
+        mem = mem.to_i
         error("Specify at least #{Global.min_memory}M minimum RAM") if
           mem < Global.min_memory
 
@@ -819,7 +821,6 @@ module PairVM
         end
 
         is_here = (here_or_there == "here")
-        mem = mem.to_i
 
         # This seems clearer, why didn't I do this the first time?
         #
