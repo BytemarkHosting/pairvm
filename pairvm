@@ -404,6 +404,7 @@ module PairVM
     def drbd_timeout; (get('drbd_timeout') || 10).to_i; end
     def kvm; get('kvm') || "/usr/bin/kvm"; end
     def kvm_options; get('kvm_options') || ""; end
+    def min_memory; (get('min_memory') || 256).to_i; end
     def max_memory
       get('max_memory') || (File.read("/proc/meminfo").split("\n")[0].split(/\s+/)[1].to_i >> 10) - 1000
     end
@@ -807,6 +808,10 @@ module PairVM
         error("Include suffix with disc_size, e.g. 50G") unless
           disc_size =~ /[MGTPE]$/
 
+        mem = mem.to_i
+        error("Specify at least #{Global.min_memory}M minimum RAM") if
+          mem < Global.min_memory
+
         if here_or_there == Global.ips['here'].to_s
           here_or_there = "here"
         elsif here_or_there == Global.ips['there'].to_s
@@ -816,7 +821,6 @@ module PairVM
         end
 
         is_here = (here_or_there == "here")
-        mem = mem.to_i
 
         # This seems clearer, why didn't I do this the first time?
         #
