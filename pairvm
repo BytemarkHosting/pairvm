@@ -1207,7 +1207,7 @@ module PairVM
         machine.drbd.setup("secondary") unless machine.drbd.primary? 
       end
 
-      def help_resize; [
+      def help_resize_disc; [
         "Resize the given server's disc",
         ["name", "size"],
         [],
@@ -1229,7 +1229,7 @@ module PairVM
         end
       end
 
-      def cmd_resize(name, new_size, confirm_shrink=nil)
+      def cmd_resize_disc(name, new_size, confirm_shrink=nil)
         check_system
         machine = Machine.new(name)
         machine.lock
