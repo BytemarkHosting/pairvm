@@ -1181,7 +1181,8 @@ module PairVM
 
       def cmd_tap_down(name)
         machine = Machine.new(name)
-        system "/usr/sbin/brctl delif #{machine.bridge} #{name}"
+        btrcl = File.exist?('/usr/sbin/brctl') ? '/usr/sbin/brctl' : '/sbin/brctl'
+        system "#{btrcl} delif #{machine.bridge} #{name}"
         system "/sbin/ip link set #{name} down"
         # make sure the other host can become primary without a fight before
         # we switch off
