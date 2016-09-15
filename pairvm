@@ -1394,13 +1394,14 @@ module PairVM
           print "No machines configured yet.\n"
           return
         end
-        print "Name            Memory Disc Run?    Home?   VNC  Disc state MAC\n" unless param
+        print "Name            Memory Disc Run?    Home?   VNC  Disc State Disc Status MAC\n" unless param
         list.each do |machine|
           if param
             print param.split(",").map { |p2| machine.send(p2.to_sym) }.
               join(" ") + "\n"
           else
-            printf "%-15s %-6s %-4s %-s %-s :%-3d %-10s %s\n",
+            /^(\w{5})\w*\/(\w{5})\w*/.match(machine.drbd.ds) ? disstatus = "#{$1}/#{$2}" : disstatus = "Error"
+            printf "%-15s %-6s %-4s %-s %-s :%-3d %-10s %-s %s\n",
               machine.name,
               machine.memory.to_s + "M",
               (machine.disc_size >> 30).to_s + "G",
@@ -1408,6 +1409,7 @@ module PairVM
               machine.at_home? ? "at home" : "away   ",
               machine.vnc_screen,
               machine.drbd.configured? ? machine.drbd.cs : "Not set up",
+              disstatus,
               machine.macaddr
           end
         end
