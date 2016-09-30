@@ -225,7 +225,7 @@ module PairVM
     def command_line_incoming
       if File.file?(@machine.memory_dump_file)
         if Time.now - File.stat(@machine.memory_dump_file).mtime < 120
-          return ["-incoming", "exec: gzip -c -d #{@machine.memory_dump_file}"]
+          return ["-incoming", "exec: pigz -c -d #{@machine.memory_dump_file}"]
         else
           File.unlink(@machine.memory_dump_file)
         end
@@ -1043,7 +1043,7 @@ module PairVM
         machine = Machine.new(name)
         (1..255).each { |fd| IO.for_fd(fd).close rescue nil }
         STDERR.reopen(File.open("/tmp/send_memory_stderr.#{name}.#{$$}", 'w'))
-        exec("gzip -c | ssh #{host} cat \\\>#{machine.memory_dump_file}")
+        exec("pigz -c | ssh #{host} cat \\\>#{machine.memory_dump_file}")
         ##exec("gzip -c >/tmp/out")
       end
 
@@ -1501,8 +1501,8 @@ module PairVM
               temp_path = this_destination_path + ".tmp." + snapshot_name
               started = Time.now
               raise BackupFailedException.new unless
-                system "gzip -c #{snapshot_path} | cpipe -s #{speed} | "+
-                "ssh #{destination_host} cat \\> "+
+              Kernel::system "cpipe -s #{speed} < #{snapshot_path} | "+
+                "pigz | ssh -C #{destination_host} cat \\> "+
                 "#{temp_path} \\&\\& "+
                 "mv #{temp_path} #{this_destination_path}"
 
@@ -1770,6 +1770,9 @@ DONE
 
         error("kpartx isn't installed") unless
           File.executable?("/sbin/kpartx")
+
+        error("pigz isn't installed") unless
+          File.executable?("/usr/bin/pigz")
 
         error("You must configure a public bridge called br0 for public IP addresses") unless
           File.directory?("/sys/class/net/br0")
