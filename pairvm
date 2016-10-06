@@ -1493,8 +1493,8 @@ module PairVM
 
           begin
             raise BackupFailedException.new unless
-              system "/sbin/lvcreate --size 4G --snapshot "+
-              "--name #{snapshot_name} #{m.drbd_backing_device} >/dev/null"
+              Kernel::system "/sbin/lvcreate --size 10G --snapshot "+
+                "--name #{snapshot_name} #{m.drbd_backing_device} >/dev/null"
 
             begin
               this_destination_path = destination_path.gsub("_NAME", m.name)
