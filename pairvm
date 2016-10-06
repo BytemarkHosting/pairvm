@@ -1492,9 +1492,27 @@ module PairVM
           destination_host, destination_path = destination.split(":", 2)
 
           begin
-            raise BackupFailedException.new unless
-              system "/sbin/lvcreate --size 4G --snapshot "+
-              "--name #{snapshot_name} #{m.drbd_backing_device} >/dev/null"
+            snapshot_taken = false
+            snapshot_attempts = 0
+            while(!snapshot_taken and snapshot_attempts < 5)
+              Kernel::system "/sbin/lvcreate --size 10G --snapshot "+
+                "--name #{snapshot_name} #{m.drbd_backing_device} >/dev/null"
+              sleep 5
+              file_check = %x[file - < #{snapshot_path}]
+              if(file_check =~ /x86/)
+                snapshot_taken = true
+              else
+                if snapshot_attempts < 4
+                  Kernel::system "/sbin/lvremove --force #{snapshot_path} >/dev/null"
+                  snapshot_attempts = snapshot_attempts+1
+                  sleep 30
+                else
+                  snapshot_attempts = snapshot_attempts+1
+                  snapshot_taken = true # it wasn't, but backup anyway
+                end
+              end
+            end
+            m.drbd.setup("disconnect")
 
             begin
               this_destination_path = destination_path.gsub("_NAME", m.name)
@@ -1511,7 +1529,8 @@ module PairVM
               end
               duration = (Time.now - started).to_i
             ensure
-              system "/sbin/lvremove --force #{snapshot_path} >/dev/null"
+              Kernel::system "/sbin/lvremove --force #{snapshot_path} >/dev/null"
+              m.drbd_connect!
             end
           rescue BackupFailedException => fail
             STDERR.print "^^^ Backup for #{m.name} failed\n"
